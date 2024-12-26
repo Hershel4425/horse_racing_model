@@ -1,0 +1,59 @@
+horse_racing_model/
+├── data/
+│   ├── raw/                  # 生データ（スクレイピング結果など）
+│   ├── processed/            # 前処理済みデータ
+│   ├── combined/             # 結合済みデータ
+│   ├── features/             # 特徴量作成後のデータ
+│   └── predictions/          # 予測結果データ
+├── models/
+│   ├── ped_model/            # 血統データモデル
+│   │   ├── __init__.py
+│   │   └── ped_model.py
+│   └── trained/              # 学習済みモデルファイル
+├── src/
+│   ├── __init__.py
+│   ├── scraping/
+│   │   ├── __init__.py
+│   │   └── scraping.py
+│   ├── preprocessing/
+│   │   ├── __init__.py
+│   │   ├── processing.py
+│   │   └── combined.py
+│   ├── feature_engineering/
+│   │   ├── __init__.py
+│   │   └── feature.py
+│   ├── input_preparation/
+│   │   ├── __init__.py
+│   │   └── make_input.py
+│   ├── training/
+│   │   ├── __init__.py
+│   │   ├── train.py
+│   │   └── [その他の学習スクリプト]
+│   ├── prediction/
+│   │   ├── __init__.py
+│   │   └── prediction.py
+│   └── visualization/
+│       ├── __init__.py
+│       └── visualize.py
+├── results/
+│   ├── training_results/     # 学習結果や精度、学習時間のCSV
+│   │   └── results.csv
+│   ├── predictions/          # 予測結果CSV
+│   │   └── pred.csv
+│   └── visuals/              # 可視化画像
+│       └── viz.png
+├── tests/                    # テストスクリプト
+│   ├── test_scraping.py
+│   ├── test_processing.py
+│   ├── test_combined.py
+│   ├── test_feature.py
+│   ├── test_make_input.py
+│   ├── test_prediction.py
+│   └── [その他のテストスクリプト]
+├── notebooks/                # Jupyterノートブック（必要に応じて）
+├── scripts/                  # 補助スクリプトやユーティリティ
+├── .vscode/                  # VSCodeの設定ファイル（必要に応じて）
+├── README.md
+├── requirements.txt
+├── setup.py                  # パッケージ化する場合
+└── .gitignore

@@ -1,0 +1,293 @@
+##### パスの設定 #####
+root_path : "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/152_競馬_v2" 
+##### input #####
+# 特徴量データ
+input_df_path : "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/152_競馬_v2/20_data_processing/input_data/input_df.pickle" 
+test_input_df_path : "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/152_競馬_v2/20_data_processing/input_data/input_df_test.pickle"
+feature_df_path : "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/152_競馬_v2/20_data_processing/feature_data/feature_df.pickle"
+# カテゴリカル変数の一覧
+categorical_feature_path : "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/152_競馬_v2/20_data_processing/input_data/categorical_features.pickle"
+# 予測結果格納用DF
+template_df_path : "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/152_競馬_v2/20_data_processing/input_data/label_df.csv" 
+
+##### 学習パラメータ #####
+test_num : 1000 # テストデータのレース数
+split_num : 7 # クロスバリデーションの分割数
+
+##### 特徴量を管理 #####
+feature:
+  - name             : '1C通過順位'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '2C通過順位'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '3C通過順位'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '4C通過順位'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '前半ペース'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '後半ペース'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : 'タイム'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : 'ペース'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name             : '単勝'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "lightgbm"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name             : '複勝'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "lightgbm"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '5着着差'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "lightgbm"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '波乱度'
+    train_flag       : False
+    feature_selection: True
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20240314202815"
+    train_type       : "regression"
+    train_method     : "lightgbm"
+    pred_flag        : True
+    use_model_pred   : 
+      flag           : True
+      date           : "20240411214110"
+    column_num       : 1
+    stacking_flag    : True
+
+  - name            : '1着馬番'
+    train_flag       : False
+    feature_selection: True
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20240314202815"
+    train_type       : "multiclass"
+    train_method     : "lightgbm"
+    pred_flag        : True
+    use_model_pred   : 
+      flag           : True
+      date           : "20240411214110"
+    column_num       : 1
+    stacking_flag    : True
+
+  - name            : '2着馬番'
+    train_flag       : False
+    feature_selection: True
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20240314202815"
+    train_type       : "multiclass"
+    train_method     : "lightgbm"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20240328095950"
+    column_num       : 1
+    stacking_flag    : False
+
+  - name            : '3着馬番'
+    train_flag       : False
+    feature_selection: True
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20240314202815"
+    train_type       : "multiclass"
+    train_method     : "lightgbm"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20240328095950"
+    column_num       : 1
+    stacking_flag    : False
+
+  - name            : '着順'
+    train_flag       : False
+    feature_selection: False
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "tabnet"
+    pred_flag        : False
+    use_model_pred   : 
+      flag           : False
+      date           : "20231116214803"
+    column_num       : 18
+    stacking_flag    : False
+
+  - name            : '期待値'
+    train_flag       : False
+    feature_selection: True
+    opt_flag         : False
+    use_model_train  : 
+      flag           : False
+      date           : "20231116214803"
+    train_type       : "regression"
+    train_method     : "lightgbm"
+    pred_flag        : True
+    use_model_pred   : 
+      flag           : True
+      date           : "20240411214110"
+    column_num       : 18
+    stacking_flag    : False
+
+
+
+

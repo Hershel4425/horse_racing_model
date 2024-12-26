@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data directories
+data/00_raw/
+data/01_processed/
+data/02_features/
+data/03_input/
+notebooks
+result
+models
+
+# # Models
+# models/trained/
+
+# # Results
+# results/
+
+# VSCode settings
+.vscode/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment files
+.env
+
+# Logs
+*.log
+
+# DVC files
+.dvc/
