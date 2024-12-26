@@ -135,21 +135,21 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
         course_type = df_show["コース種類"].iloc[0]
         grass_type = df_show["芝タイプ"].iloc[0]
         if (grass_type == "重") & (course_type == "芝"):
-            selected_flags.append("重")
+            selected_flags.append("芝重")
         if (grass_type == "中") & (course_type == "芝"):
-            selected_flags.append("中")
+            selected_flags.append("芝中")
         if (grass_type == "軽") & (course_type == "芝"):
-            selected_flags.append("軽")
+            selected_flags.append("芝軽")
 
         # ダートタイプ
         course_type = df_show["コース種類"].iloc[0]
         dirt_type = df_show["ダートタイプ"].iloc[0]
         if (dirt_type == "重") & (course_type == "ダート"):
-            selected_flags.append("重")
+            selected_flags.append("ダート重")
         if (dirt_type == "中") & (course_type == "ダート"):
-            selected_flags.append("中")
+            selected_flags.append("ダート中")
         if (dirt_type == "軽") & (course_type == "ダート"):
-            selected_flags.append("軽")
+            selected_flags.append("ダート軽")
 
         spart_type = df_show["スパートタイプ"].iloc[0]
         if spart_type == "ロンスパ":

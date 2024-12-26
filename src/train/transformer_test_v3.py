@@ -596,6 +596,10 @@ def run_train(
         ax = axes[i]
         ax.plot(prob_pred, prob_true, marker='o', label='Calibration')
         ax.plot([0,1],[0,1], '--', color='gray', label='Perfect')
+
+        ax2 = ax.twinx()
+        ax2.hist(all_probs[:, i], bins=10, range=(0,1), alpha=0.3, color='gray')
+
         ax.set_title(f'Calibration Curve ({target_names[i]})')
         ax.set_xlabel('Predicted Probability')
         ax.set_ylabel('True Probability')
