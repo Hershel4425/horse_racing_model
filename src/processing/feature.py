@@ -177,7 +177,7 @@ def calc_rating_mean(df):
     # ソート
     df = df.sort_values(['horse_id', 'date', 'race_id']).reset_index(drop=True)
 
-    # レースごとにhorse_mu_beforeの平均を取る
+    # レースごとに馬レーティング_beforeの平均を取る
     df["馬平均レーティング"] = df.groupby("race_id")["馬レーティング"].transform("mean")
     df["騎手平均レーティング"] = df.groupby("race_id")["騎手レーティング"].transform("mean")
 
@@ -272,7 +272,7 @@ def create_jockey_rating_change_feature(df):
     df["prev_騎手レーティング"] = df.groupby('horse_id')["騎手レーティング"].shift(1)
 
     # ジョッキーが変わったかどうかを判定する
-    # 変わっていなければ 0、変わっていれば (今のjockey_mu - 前走のjockey_mu)
+    # 変わっていなければ 0、変わっていれば (今の騎手レーティング - 前走の騎手レーティング)
     # ただし前走が存在しない（NaN）の場合は 0 とする
     def calc_jockey_change(row):
         if pd.isna(row["prev_jockey_id"]):
@@ -285,7 +285,7 @@ def create_jockey_rating_change_feature(df):
                 # 前走の mu が NaN (初回レース等) なら変化量は 0 と定義
                 return 0
             else:
-                # 今回のジョッキーの "jockey_mu_before" から、前回ジョッキーの "prev_jockey_mu" を引いた差をとる
+                # 今回のジョッキーの "騎手レーティング_before" から、前回ジョッキーの "prev_騎手レーティング" を引いた差をとる
                 return row["騎手レーティング"] - row["prev_騎手レーティング"]
             
     df["騎手レーティング_change"] = df.apply(calc_jockey_change, axis=1)
@@ -484,18 +484,18 @@ def create_flag_features_and_update(df):
         # -------------------------------
         # 枠によるフラグ作成
         # -------------------------------
-        df_["内枠"] = df_["馬番"].apply(lambda x: 1 if 1 <= x <= 6 else 0)
-        df_["中枠"] = df_["馬番"].apply(lambda x: 1 if 7 <= x <= 12 else 0)
-        df_["外枠"] = df_["馬番"].apply(lambda x: 1 if 13 <= x <= 18 else 0)
+        df_["内枠"] = (((1 <= df_["馬番"]) & (df_["馬番"] <= 6))).astype(int)
+        df_["中枠"] = (((7 <= df_["馬番"]) & (df_["馬番"] <= 12))).astype(int)
+        df_["外枠"] = (((13 <= df_["馬番"]) & (df_["馬番"] <= 18))).astype(int)
 
         # -------------------------------
         # 距離によるフラグ作成
         # -------------------------------
-        df_["短距離"] = df_["距離"].apply(lambda x: 1 if 1000 <= x <= 1400 else 0)
-        df_["マイル"] = df_["距離"].apply(lambda x: 1 if 1401 <= x <= 1799 else 0)
-        df_["中距離"] = df_["距離"].apply(lambda x: 1 if 1800 <= x <= 2200 else 0)
-        df_["クラシック"] = df_["距離"].apply(lambda x: 1 if 2201 <= x <= 2600 else 0)
-        df_["長距離"] = df_["距離"].apply(lambda x: 1 if 2601 <= x <= 4000 else 0)
+        df_["短距離"] = (((1000 <= df_["距離"]) & (df_["距離"] <= 1400))).astype(int)
+        df_["マイル"] = (((1401 <= df_["距離"]) & (df_["距離"] <= 1799))).astype(int)
+        df_["中距離"] = (((1800 <= df_["距離"]) & (df_["距離"] <= 2200))).astype(int)
+        df_["クラシック"] = (((2201 <= df_["距離"]) & (df_["距離"] <= 2600))).astype(int)
+        df_["長距離"] = (((2601 <= df_["距離"]) & (df_["距離"] <= 4000))).astype(int)
 
         # -------------------------------
         # 方向フラグ作成
@@ -574,14 +574,6 @@ def create_flag_features_and_update(df):
         df_["平場"] = ((df_["グレード"]!="G1") & (df_["グレード"]!="G2") & (df_["グレード"]!="G3")).astype(int)
         df_["重賞"] = ((df_["グレード"]=="G1") | (df_["グレード"]=="G2") | (df_["グレード"]=="G3")).astype(int)
 
-        # -------------------------------
-        # 順位点の作成
-        # ※ 当該行のレース情報として「最終的に付与される順位点」は残すが、
-        #   更新時には"直前レース"の順位点だけを参照するようにする
-        # -------------------------------
-        df_["順位点"] = (df_["立て数"] - df_["着順"] + 1) / df_["立て数"]
-        return df_
-
     # ----------------------------------------
     # 元のデータを複製してフラグ列を作成
     # ----------------------------------------
@@ -614,8 +606,8 @@ def create_flag_features_and_update(df):
     #   - 各フラグ用のレーティング辞書を作成
     #   - レースごとに「フラグ=1」のもののみレーティングを更新
     #   - フラグ=0のレースはレーティング更新せず、直前のレーティングを保持する
-    #   - 結果は各レース行に horse_mu_{flag}, horse_sigma_{flag}, 
-    #     jockey_mu_{flag}, jockey_sigma_{flag} として格納
+    #   - 結果は各レース行に 馬レーティング_{flag}, 馬レーティング_sigma_{flag}, 
+    #     騎手レーティング_{flag}, 騎手レーティング_sigma_{flag} として格納
     # ----------------------------------------
 
     # TrueSkill 環境の作成
@@ -628,11 +620,13 @@ def create_flag_features_and_update(df):
     jockey_ratings = {flag: {} for flag in flag_cols}
 
     # 各フラグ列のレーティング(mu, sigma)を格納するための列を df に追加
+    new_cols = {}
     for flag in flag_cols:
-        df[f"horse_mu_{flag}"]   = None
-        df[f"horse_sigma_{flag}"] = None
-        df[f"jockey_mu_{flag}"]  = None
-        df[f"jockey_sigma_{flag}"] = None
+        new_cols[f"馬レーティング_{flag}"] = np.full(len(df), np.nan)
+        new_cols[f"馬レーティング_sigma_{flag}"] = np.full(len(df), np.nan)
+        new_cols[f"騎手レーティング_{flag}"] = np.full(len(df), np.nan)
+        new_cols[f"騎手レーティング_sigma_{flag}"] = np.full(len(df), np.nan)
+
 
     # レース単位でgroupbyし、時系列順に TrueSkill を更新
     # レース前の rating を各行に格納し、フラグ=1なら更新
@@ -658,8 +652,8 @@ def create_flag_features_and_update(df):
                     horse_ratings[flag][h_id] = env.create_rating()
 
                 # 現時点のレーティングを格納（更新前の値を入れる）
-                df.at[i, f"horse_mu_{flag}"]   = horse_ratings[flag][h_id].mu
-                df.at[i, f"horse_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
+                new_cols[f"馬レーティング_{flag}"][i] = horse_ratings[flag][h_id].mu
+                new_cols[f"馬レーティング_sigma_{flag}"][i] = horse_ratings[flag][h_id].sigma
 
             # 今レースのうち「flag=1」の行だけ更新対象とする
             # ただし、rank が NaN ならスキップ
@@ -684,8 +678,8 @@ def create_flag_features_and_update(df):
             # フラグ=0の行も最新値を格納（更新は行われていないが、値は保持）
             for i in idxs:
                 h_id = df.at[i, "horse_id"]
-                df.at[i, f"horse_mu_{flag}"]   = horse_ratings[flag][h_id].mu
-                df.at[i, f"horse_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
+                new_cols[f"馬レーティング_{flag}"][i] = horse_ratings[flag][h_id].mu
+                new_cols[f"馬レーティング_sigma_{flag}"][i] = horse_ratings[flag][h_id].sigma
 
         # ----------------------------
         # 2) 騎手のレーティング更新
@@ -702,8 +696,8 @@ def create_flag_features_and_update(df):
                 if j_id not in jockey_ratings[flag]:
                     jockey_ratings[flag][j_id] = env.create_rating()
 
-                df.at[i, f"jockey_mu_{flag}"]   = jockey_ratings[flag][j_id].mu
-                df.at[i, f"jockey_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
+                new_cols[f"騎手レーティング_{flag}"][i] = jockey_ratings[flag][j_id].mu
+                new_cols[f"騎手レーティング_sigma_{flag}"][i] = jockey_ratings[flag][j_id].sigma
 
             group_flag_1 = group[group[flag] == 1]
             for i2 in group_flag_1.index:
@@ -724,8 +718,11 @@ def create_flag_features_and_update(df):
             # 更新後のレーティングを再度書き込み
             for i in idxs:
                 j_id = df.at[i, "jockey_id"]
-                df.at[i, f"jockey_mu_{flag}"]   = jockey_ratings[flag][j_id].mu
-                df.at[i, f"jockey_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
+                new_cols[f"騎手レーティング_{flag}"][i] = jockey_ratings[flag][j_id].mu
+                new_cols[f"騎手レーティング_sigma_{flag}"][i] = jockey_ratings[flag][j_id].sigma
+
+        df_new = pd.DataFrame(new_cols, index=df.index)
+        df = pd.concat([df, df_new], axis=1)
 
     return df
 
@@ -1330,7 +1327,7 @@ def run_feature():
     # 乗り替わり騎手のレーティング差列を作成
     df = create_jockey_rating_change_feature(df)
     # 追加したカラムは要らないという場合は削除してもOK
-    # df.drop(["prev_jockey_id", "prev_jockey_mu"], axis=1, inplace=True)
+    # df.drop(["prev_jockey_id", "prev_騎手レーティング"], axis=1, inplace=True)
     # 過去成績計算
     df = calc_career_statics(df, "競走馬")
     df = calc_career_statics(df, "騎手")

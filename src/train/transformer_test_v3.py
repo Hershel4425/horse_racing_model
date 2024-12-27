@@ -160,7 +160,9 @@ def prepare_data(
     if leakage_cols is None:
         leakage_cols = [
             '斤量','タイム','着差','単勝','上がり3F','馬体重','horse_id','jockey_id',
-            'trainer_id','騎手','順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
+            'trainer_id',
+            # '騎手',
+            '順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
             '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース',
             '上がり3F順位','100m','200m','300m','400m','500m','600m','700m','800m','900m','1000m',
             '1100m','1200m','1300m','1400m','1500m','1600m','1700m','1800m','1900m','2000m',
@@ -198,7 +200,7 @@ def prepare_data(
         valid_df[c] = valid_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
 
-    pca_pattern = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート|騎手芝|騎手ダート)'
+    pca_pattern = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート|騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
     pca_target_cols = [c for c in num_cols if re.match(pca_pattern, c)]
     other_num_cols = [c for c in num_cols if c not in pca_target_cols]
 
