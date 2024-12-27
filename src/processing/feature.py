@@ -574,6 +574,8 @@ def create_flag_features_and_update(df):
         df_["平場"] = ((df_["グレード"]!="G1") & (df_["グレード"]!="G2") & (df_["グレード"]!="G3")).astype(int)
         df_["重賞"] = ((df_["グレード"]=="G1") | (df_["グレード"]=="G2") | (df_["グレード"]=="G3")).astype(int)
 
+        return df_
+    
     # ----------------------------------------
     # 元のデータを複製してフラグ列を作成
     # ----------------------------------------
@@ -620,13 +622,11 @@ def create_flag_features_and_update(df):
     jockey_ratings = {flag: {} for flag in flag_cols}
 
     # 各フラグ列のレーティング(mu, sigma)を格納するための列を df に追加
-    new_cols = {}
     for flag in flag_cols:
-        new_cols[f"馬レーティング_{flag}"] = np.full(len(df), np.nan)
-        new_cols[f"馬レーティング_sigma_{flag}"] = np.full(len(df), np.nan)
-        new_cols[f"騎手レーティング_{flag}"] = np.full(len(df), np.nan)
-        new_cols[f"騎手レーティング_sigma_{flag}"] = np.full(len(df), np.nan)
-
+        df[f"競走馬_{flag}"]   = None
+        df[f"競走馬レーティング_sigma_{flag}"] = None
+        df[f"騎手レーティング__{flag}"]  = None
+        df[f"騎手レーティング_sigma_{flag}"] = None
 
     # レース単位でgroupbyし、時系列順に TrueSkill を更新
     # レース前の rating を各行に格納し、フラグ=1なら更新
@@ -652,8 +652,8 @@ def create_flag_features_and_update(df):
                     horse_ratings[flag][h_id] = env.create_rating()
 
                 # 現時点のレーティングを格納（更新前の値を入れる）
-                new_cols[f"馬レーティング_{flag}"][i] = horse_ratings[flag][h_id].mu
-                new_cols[f"馬レーティング_sigma_{flag}"][i] = horse_ratings[flag][h_id].sigma
+                df.at[i, f"競走馬レーティング_{flag}"]   = horse_ratings[flag][h_id].mu
+                df.at[i, f"競走馬レーティング_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
 
             # 今レースのうち「flag=1」の行だけ更新対象とする
             # ただし、rank が NaN ならスキップ
@@ -678,8 +678,8 @@ def create_flag_features_and_update(df):
             # フラグ=0の行も最新値を格納（更新は行われていないが、値は保持）
             for i in idxs:
                 h_id = df.at[i, "horse_id"]
-                new_cols[f"馬レーティング_{flag}"][i] = horse_ratings[flag][h_id].mu
-                new_cols[f"馬レーティング_sigma_{flag}"][i] = horse_ratings[flag][h_id].sigma
+                df.at[i, f"競走馬レーティング_{flag}"]   = horse_ratings[flag][h_id].mu
+                df.at[i, f"競走馬レーティング_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
 
         # ----------------------------
         # 2) 騎手のレーティング更新
@@ -696,8 +696,8 @@ def create_flag_features_and_update(df):
                 if j_id not in jockey_ratings[flag]:
                     jockey_ratings[flag][j_id] = env.create_rating()
 
-                new_cols[f"騎手レーティング_{flag}"][i] = jockey_ratings[flag][j_id].mu
-                new_cols[f"騎手レーティング_sigma_{flag}"][i] = jockey_ratings[flag][j_id].sigma
+                df.at[i, f"騎手レーティング__{flag}"]   = jockey_ratings[flag][j_id].mu
+                df.at[i, f"騎手レーティング_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
 
             group_flag_1 = group[group[flag] == 1]
             for i2 in group_flag_1.index:
@@ -718,11 +718,8 @@ def create_flag_features_and_update(df):
             # 更新後のレーティングを再度書き込み
             for i in idxs:
                 j_id = df.at[i, "jockey_id"]
-                new_cols[f"騎手レーティング_{flag}"][i] = jockey_ratings[flag][j_id].mu
-                new_cols[f"騎手レーティング_sigma_{flag}"][i] = jockey_ratings[flag][j_id].sigma
-
-        df_new = pd.DataFrame(new_cols, index=df.index)
-        df = pd.concat([df, df_new], axis=1)
+                df.at[i, f"騎手レーティング__{flag}"]   = jockey_ratings[flag][j_id].mu
+                df.at[i, f"騎手レーティング_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
 
     return df
 

@@ -1,6 +1,7 @@
 import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import re
+import datetime
 import pandas as pd
 import numpy as np
 import math
@@ -24,12 +25,19 @@ if torch.cuda.is_available():
 
 # ファイルパス設定（必要に応じて変更してください）
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
+DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transormer予測モデル/{DATE_STRING}")
+if not os.path.exists(MODEL_SAVE_DIR):
+    os.makedirs(MODEL_SAVE_DIR)
+
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/test.csv")
-SAVE_PATH_MODEL = os.path.join(ROOT_PATH, "models/test/model")
-SAVE_PATH_PCA_MODEL = os.path.join(ROOT_PATH, "models/test/pcamodel")
-SAVE_PATH_SCALER_ALL = os.path.join(ROOT_PATH, "models/test/scaler_all")
-SAVE_PATH_SCALER_OTHER = os.path.join(ROOT_PATH, "models/test/scaler_other")
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/{DATE_STRING}.csv")
+SAVE_PATH_MODEL = os.path.join(MODEL_SAVE_DIR, "model")
+SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse")
+SAVE_PATH_PCA_MODEL_JOCKEY = os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey")
+SAVE_PATH_SCALER_HORSE = os.path.join(MODEL_SAVE_DIR, "scaler_horse")
+SAVE_PATH_SCALER_JOCKEY = os.path.join(MODEL_SAVE_DIR, "scaler_jockey")
+SAVE_PATH_SCALER_OTHER = os.path.join(MODEL_SAVE_DIR, "scaler_other")
 
 # =====================
 # Datasetクラス
@@ -153,7 +161,8 @@ def prepare_data(
     pop_col="人気",
     id_col="race_id",
     leakage_cols=None,
-    pca_dim=50,
+    pca_dim_horse=50,
+    pca_dim_jockey=50,
     test_ratio=0.1,
     valid_ratio=0.1
 ):
@@ -200,35 +209,81 @@ def prepare_data(
         valid_df[c] = valid_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
 
-    pca_pattern = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート|騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
-    pca_target_cols = [c for c in num_cols if re.match(pca_pattern, c)]
-    other_num_cols = [c for c in num_cols if c not in pca_target_cols]
+    pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
+    pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
+    # 対象となるカラムの抽出
+    pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
+    pca_jockey_target_cols = [c for c in num_cols if re.match(pca_pattern_jockey, c)]
+    other_num_cols = [c for c in num_cols if (c not in pca_horse_target_cols) 
+                    & (c not in pca_jockey_target_cols)]
 
-    scaler_all = StandardScaler()
-    pca_target_features_train = scaler_all.fit_transform(train_df[pca_target_cols].values)
-    pca_dim = min(pca_dim, pca_target_features_train.shape[1])
-    pca_model = PCA(n_components=pca_dim)
-    pca_features_train = pca_model.fit_transform(pca_target_features_train)
+    # Horse用のスケーリングとPCA
+    scaler_horse = StandardScaler()
+    horse_features_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols].values)
+    horse_features_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols].values)
+    horse_features_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols].values)
 
-    pca_target_features_valid = scaler_all.transform(valid_df[pca_target_cols].values)
-    pca_features_valid = pca_model.transform(pca_target_features_valid)
-    pca_target_features_test = scaler_all.transform(test_df[pca_target_cols].values)
-    pca_features_test = pca_model.transform(pca_target_features_test)
+    # PCAの次元数を設定（必要に応じて調整）
+    pca_dim_horse = min(pca_dim_horse, horse_features_train_scaled.shape[1])
+    pca_model_horse = PCA(n_components=pca_dim_horse)
+    horse_features_train_pca = pca_model_horse.fit_transform(horse_features_train_scaled)
+    horse_features_valid_pca = pca_model_horse.transform(horse_features_valid_scaled)
+    horse_features_test_pca = pca_model_horse.transform(horse_features_test_scaled)
 
+    # Jockey用のスケーリングとPCA
+    scaler_jockey = StandardScaler()
+    jockey_features_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols].values)
+    jockey_features_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols].values)
+    jockey_features_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols].values)
+
+    # PCAの次元数を設定（必要に応じて調整）
+    pca_dim_jockey = min(pca_dim_jockey, jockey_features_train_scaled.shape[1])
+    pca_model_jockey = PCA(n_components=pca_dim_jockey)
+    jockey_features_train_pca = pca_model_jockey.fit_transform(jockey_features_train_scaled)
+    jockey_features_valid_pca = pca_model_jockey.transform(jockey_features_valid_scaled)
+    jockey_features_test_pca = pca_model_jockey.transform(jockey_features_test_scaled)
+
+    # その他の数値特徴量のスケーリング
     scaler_other = StandardScaler()
     other_features_train = scaler_other.fit_transform(train_df[other_num_cols].values)
     other_features_valid = scaler_other.transform(valid_df[other_num_cols].values)
     other_features_test = scaler_other.transform(test_df[other_num_cols].values)
 
+    # カテゴリ特徴量の取得
     cat_features_train = train_df[cat_cols].values
     cat_features_valid = valid_df[cat_cols].values
     cat_features_test = test_df[cat_cols].values
 
-    X_train = np.concatenate([cat_features_train, other_features_train, pca_features_train], axis=1)
-    X_valid = np.concatenate([cat_features_valid, other_features_valid, pca_features_valid], axis=1)
-    X_test = np.concatenate([cat_features_test, other_features_test, pca_features_test], axis=1)
+    # 特徴量の結合
+    X_train = np.concatenate([
+        cat_features_train, 
+        other_features_train, 
+        horse_features_train_pca, 
+        jockey_features_train_pca
+    ], axis=1)
 
-    actual_num_dim = other_features_train.shape[1] + pca_dim
+    X_valid = np.concatenate([
+        cat_features_valid, 
+        other_features_valid, 
+        horse_features_valid_pca, 
+        jockey_features_valid_pca
+    ], axis=1)
+
+    X_test = np.concatenate([
+        cat_features_test, 
+        other_features_test, 
+        horse_features_test_pca, 
+        jockey_features_test_pca
+    ], axis=1)
+
+    # 実際の数値次元数の計算
+    actual_num_dim = other_features_train.shape[1] + pca_dim_horse + pca_dim_jockey
+
+    # 必要に応じてデータを確認
+    print(f'X_train shape: {X_train.shape}')
+    print(f'X_valid shape: {X_valid.shape}')
+    print(f'X_test shape: {X_test.shape}')
+    print(f'Actual numerical dimensions: {actual_num_dim}')
 
     def create_sequences(_df, X):
         """
@@ -348,10 +403,11 @@ def prepare_data(
     test_dataset  = HorseRaceDataset(test_seq,  test_lab,  test_mask,  test_rids_seq,  test_horses_seq)
 
     return (train_dataset, valid_dataset, test_dataset,
-            cat_cols, cat_unique, max_seq_len, pca_dim, 6,
+            cat_cols, cat_unique, max_seq_len, pca_dim_horse, pca_dim_jockey, 6,
             actual_num_dim, df, cat_cols, num_cols,
-            pca_target_cols, other_num_cols, scaler_all, scaler_other,
-            pca_model, X_train.shape[1], id_col, target_col, train_df)
+            pca_horse_target_cols, pca_jockey_target_cols, other_num_cols, 
+            scaler_horse, scaler_jockey, scaler_other,
+            pca_model_horse, pca_model_jockey, X_train.shape[1], id_col, target_col, train_df)
 
 
 def run_train(
@@ -362,7 +418,8 @@ def run_train(
     batch_size=256,
     lr=0.001,
     num_epochs=100,
-    pca_dim=50,
+    pca_dim_horse=50,
+    pca_dim_jockey=50,
     test_ratio=0.2,
     valid_ratio=0.1,
     d_model=128,
@@ -373,16 +430,18 @@ def run_train(
     patience=10
 ):
     (train_dataset, valid_dataset, test_dataset,
-     cat_cols, cat_unique, max_seq_len, pca_dim, num_outputs,
-     actual_num_dim, df, cat_cols_all, num_cols_all,
-     pca_target_cols, other_num_cols,
-     scaler_all, scaler_other, pca_model, feature_dim,
-     id_col, target_col, train_df) = prepare_data(
+     cat_cols, cat_unique, max_seq_len, pca_dim_horse, pca_dim_jockey, _,
+     actual_num_dim, _, _, _,
+     _, _, _,
+     scaler_horse, scaler_jockey, scaler_other,
+     pca_model_horse, pca_model_jockey, _,
+     id_col, target_col, _) = prepare_data(
         data_path=data_path,
         target_col=target_col,
         pop_col=pop_col,
         id_col=id_col,
-        pca_dim=pca_dim,
+        pca_dim_horse=pca_dim_horse,
+        pca_dim_jockey=pca_dim_jockey,
         test_ratio=test_ratio,
         valid_ratio=valid_ratio
     )
@@ -614,10 +673,14 @@ def run_train(
     # モデル保存
     with open(SAVE_PATH_MODEL, "wb") as f:
         pickle.dump(model.state_dict(), f)
-    with open(SAVE_PATH_PCA_MODEL, "wb") as f:
-        pickle.dump(pca_model, f)
-    with open(SAVE_PATH_SCALER_ALL, "wb") as f:
-        pickle.dump(scaler_all, f)
+    with open(SAVE_PATH_PCA_MODEL_HORSE, "wb") as f:
+        pickle.dump(pca_model_horse, f)
+    with open(SAVE_PATH_PCA_MODEL_JOCKEY, "wb") as f:
+        pickle.dump(pca_model_jockey, f)
+    with open(SAVE_PATH_SCALER_HORSE, "wb") as f:
+        pickle.dump(scaler_horse, f)
+    with open(SAVE_PATH_SCALER_JOCKEY, "wb") as f:
+        pickle.dump(scaler_jockey, f)
     with open(SAVE_PATH_SCALER_OTHER, "wb") as f:
         pickle.dump(scaler_other, f)
 
