@@ -578,10 +578,6 @@ def create_flag_features_and_update(df):
         return df_
     
     def update_ratings_for_single_flag(df, flag, env):
-        df = df.copy()
-        df = df.drop_duplicates(subset=["race_id", "馬番"])
-        df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
-
         horse_ratings = {}
         jockey_ratings = {}
         
