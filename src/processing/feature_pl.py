@@ -578,6 +578,10 @@ def create_flag_features_and_update(df):
         return df_
     
     def update_ratings_for_single_flag(df, flag, env):
+        df = df.copy()
+        df = df.drop_duplicates(subset=["race_id", "馬番"])
+        df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
+
         horse_ratings = {}
         jockey_ratings = {}
         
@@ -644,15 +648,6 @@ def create_flag_features_and_update(df):
                     j_id = df.at[row_idx, "jockey_id"]
                     jockey_ratings[j_id] = updated_j[x][0]
 
-            # 更新後の値を再格納
-            for i in idxs_sorted:
-                h_id = df.at[i, "horse_id"]
-                j_id = df.at[i, "jockey_id"]
-                horse_mu_array[i] = horse_ratings[h_id].mu
-                horse_sigma_array[i] = horse_ratings[h_id].sigma
-                jockey_mu_array[i] = jockey_ratings[j_id].mu
-                jockey_sigma_array[i] = jockey_ratings[j_id].sigma
-
         col_mu_horse = f"競走馬レーティング_{flag}"
         col_sigma_horse = f"競走馬レーティング_sigma_{flag}"
         col_mu_jockey = f"騎手レーティング__{flag}"
@@ -694,7 +689,7 @@ def create_flag_features_and_update(df):
 
         results = Parallel(n_jobs=-1)(
             delayed(update_ratings_for_single_flag)(
-                df[["race_id", "着順", "horse_id", "jockey_id", f]],
+                df[["date", "race_id", "着順", "horse_id", "jockey_id", f]],
                 f,
                 env
             )
