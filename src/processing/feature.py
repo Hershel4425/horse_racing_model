@@ -6,6 +6,8 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 
+from joblib import Parallel, delayed
+
 import trueskill
 
 import matplotlib.pyplot as plt
@@ -477,7 +479,6 @@ def create_flag_features_and_update(df):
     # ソート
     df = df.sort_values(['horse_id', 'date', 'race_id']).reset_index(drop=True)
 
-    print('適正列を追加')
     def create_flag_features(df_):
         df_ = df_.copy()
 
@@ -576,168 +577,128 @@ def create_flag_features_and_update(df):
 
         return df_
     
-    # ----------------------------------------
-    # 元のデータを複製してフラグ列を作成
-    # ----------------------------------------
-    df = df.copy()
-    df.drop_duplicates(subset=["race_id", "馬番"], inplace=True)
-    df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
-    df = create_flag_features(df)
+    def update_ratings_for_single_flag(df, flag, env):
+        horse_ratings = {}
+        jockey_ratings = {}
+        
+        # 結果格納用配列
+        n = len(df)
+        horse_mu_array = np.zeros(n, dtype=np.float32)
+        horse_sigma_array = np.zeros(n, dtype=np.float32)
+        jockey_mu_array = np.zeros(n, dtype=np.float32)
+        jockey_sigma_array = np.zeros(n, dtype=np.float32)
 
-    # ----------------------------------------
-    # ここで、フラグ列の一覧を作成
-    # ----------------------------------------
-    flag_cols = [
-        "内枠", "中枠", "外枠",
-        "短距離", "マイル", "中距離", "クラシック", "長距離",
-        "方向_右", "方向_左", "方向_直線",
-        "芝", "ダート",
-        "大回り", "小回り", "急",
-        "急坂", "平坦", "緩坂",
-        "芝軽", "芝中", "芝重",
-        "ダート軽", "ダート中", "ダート重",
-        "ロンスパ", "瞬発力",
-        "高速", "中速", "低速",
-        "天気_晴", "天気_雨", "天気_曇", "天気_雪",
-        "馬場_良", "馬場_不", "馬場_重", "馬場_稍",
-        "平場", "重賞"
-    ]
+        race_groups = df.groupby("race_id", sort=False)
+        race_ids = list(race_groups.groups.keys())
 
-    # ----------------------------------------
-    # フラグ列ごとに、馬 & 騎手のTrueSkillレーティングを更新
-    #   - 各フラグ用のレーティング辞書を作成
-    #   - レースごとに「フラグ=1」のもののみレーティングを更新
-    #   - フラグ=0のレースはレーティング更新せず、直前のレーティングを保持する
-    #   - 結果は各レース行に 馬レーティング_{flag}, 馬レーティング_sigma_{flag}, 
-    #     騎手レーティング_{flag}, 騎手レーティング_sigma_{flag} として格納
-    # ----------------------------------------
+        for race_id in race_ids:
+            idxs = race_groups.groups[race_id]
+            idxs_sorted = idxs.sort_values()
 
-    # TrueSkill 環境の作成
-    env = trueskill.TrueSkill(draw_probability=0.0)
-
-    # フラグ列×馬(jockey)ごとのレーティングを管理する辞書
-    #   horse_ratings[flag][horse_id] -> Rating
-    #   jockey_ratings[flag][jockey_id] -> Rating
-    horse_ratings = {flag: {} for flag in flag_cols}
-    jockey_ratings = {flag: {} for flag in flag_cols}
-
-    # -------------------------------
-    # カラムを先に作成（at使用回数を減らすため）
-    # -------------------------------
-    for flag in flag_cols:
-        df[f"競走馬レーティング_{flag}"] = np.nan
-        df[f"競走馬レーティング_sigma_{flag}"] = np.nan
-        df[f"騎手レーティング__{flag}"] = np.nan
-        df[f"騎手レーティング_sigma_{flag}"] = np.nan
-
-    # -------------------------------
-    # グループ分割の前処理
-    # -------------------------------
-    race_groups = df.groupby("race_id", sort=False)
-    race_ids = list(race_groups.groups.keys())
-
-    # -------------------------------
-    # 結果格納用に配列を用意
-    # （dfの行数×各列を格納する）
-    # -------------------------------
-    n = len(df)
-    horse_mu_arrays   = {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
-    horse_sigma_arrays= {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
-    jockey_mu_arrays  = {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
-    jockey_sigma_arrays= {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
-
-    # レース単位でgroupbyし、時系列順に TrueSkill を更新
-    # レース前の rating を各行に格納し、フラグ=1なら更新
-    for race_id in tqdm(race_ids):
-        idxs = race_groups.groups[race_id]
-        group = df.loc[idxs, :]
-        idxs_sorted = idxs.sort_values()
-
-        # ----------------------------
-        # 先に更新前レーティングを格納
-        # ----------------------------
-        for flag in flag_cols:
+            # レース前のレーティングを格納
             for i in idxs_sorted:
                 h_id = df.at[i, "horse_id"]
                 j_id = df.at[i, "jockey_id"]
-                # 初出ならRatingを初期化
-                if h_id not in horse_ratings[flag]:
-                    horse_ratings[flag][h_id] = env.create_rating()
-                if j_id not in horse_ratings[flag]:
-                    jockey_ratings[flag][j_id] = env.create_rating()
+                if h_id not in horse_ratings:
+                    horse_ratings[h_id] = env.create_rating()
+                if j_id not in jockey_ratings:
+                    jockey_ratings[j_id] = env.create_rating()
+                horse_mu_array[i] = horse_ratings[h_id].mu
+                horse_sigma_array[i] = horse_ratings[h_id].sigma
+                jockey_mu_array[i] = jockey_ratings[j_id].mu
+                jockey_sigma_array[i] = jockey_ratings[j_id].sigma
 
-                horse_mu_arrays[flag][i] = horse_ratings[flag][h_id].mu
-                horse_sigma_arrays[flag][i] = horse_ratings[flag][h_id].sigma
-                jockey_mu_arrays[flag][i] = jockey_ratings[flag][j_id].mu
-                jockey_sigma_arrays[flag][i] = jockey_ratings[flag][j_id].sigma
+            # レース結果で更新
+            group_flag_1 = df.loc[idxs_sorted, :][df.loc[idxs_sorted, flag] == 1]
+            participants_for_update_horse = []
+            participants_for_update_jockey = []
+            ranks_for_update_horse = []
+            ranks_for_update_jockey = []
+            indices_for_update_horse = []
+            indices_for_update_jockey = []
 
-        # ----------------------------
-        # 馬のレーティング更新
-        # ----------------------------
-        for flag in flag_cols:
-            participants_for_update = []
-            ranks_for_update = []
-            indices_for_update = []
-
-            group_flag_1 = group[group[flag] == 1]
             for i2 in group_flag_1.index:
                 rank = df.at[i2, "着順"]
                 if pd.isna(rank):
                     continue
+                rank = int(rank) - 1
                 h_id = df.at[i2, "horse_id"]
-                participants_for_update.append([horse_ratings[flag][h_id]])
-                ranks_for_update.append(int(rank) - 1)
-                indices_for_update.append(i2)
-
-            if len(participants_for_update) >= 2:
-                updated = env.rate(participants_for_update, ranks=ranks_for_update)
-                for x, row_idx in enumerate(indices_for_update):
-                    h_id = df.at[row_idx, "horse_id"]
-                    horse_ratings[flag][h_id] = updated[x][0]
-
-            # 更新後の値を配列に再格納
-            for i in idxs_sorted:
-                h_id = df.at[i, "horse_id"]
-                horse_mu_arrays[flag][i] = horse_ratings[flag][h_id].mu
-                horse_sigma_arrays[flag][i] = horse_ratings[flag][h_id].sigma
-
-        # ----------------------------
-        # 騎手のレーティング更新
-        # ----------------------------
-        for flag in flag_cols:
-            participants_for_update = []
-            ranks_for_update = []
-            indices_for_update = []
-
-            group_flag_1 = group[group[flag] == 1]
-            for i2 in group_flag_1.index:
-                rank = df.at[i2, "着順"]
-                if pd.isna(rank):
-                    continue
                 j_id = df.at[i2, "jockey_id"]
-                participants_for_update.append([jockey_ratings[flag][j_id]])
-                ranks_for_update.append(int(rank) - 1)
-                indices_for_update.append(i2)
 
-            if len(participants_for_update) >= 2:
-                updated = env.rate(participants_for_update, ranks=ranks_for_update)
-                for x, row_idx in enumerate(indices_for_update):
+                participants_for_update_horse.append([horse_ratings[h_id]])
+                participants_for_update_jockey.append([jockey_ratings[j_id]])
+                ranks_for_update_horse.append(rank)
+                ranks_for_update_jockey.append(rank)
+                indices_for_update_horse.append(i2)
+                indices_for_update_jockey.append(i2)
+
+            if len(participants_for_update_horse) >= 2:
+                updated = env.rate(participants_for_update_horse, ranks=ranks_for_update_horse)
+                for x, row_idx in enumerate(indices_for_update_horse):
+                    h_id = df.at[row_idx, "horse_id"]
+                    horse_ratings[h_id] = updated[x][0]
+
+            if len(participants_for_update_jockey) >= 2:
+                updated_j = env.rate(participants_for_update_jockey, ranks=ranks_for_update_jockey)
+                for x, row_idx in enumerate(indices_for_update_jockey):
                     j_id = df.at[row_idx, "jockey_id"]
-                    jockey_ratings[flag][j_id] = updated[x][0]
+                    jockey_ratings[j_id] = updated_j[x][0]
 
-            for i in idxs_sorted:
-                j_id = df.at[i, "jockey_id"]
-                jockey_mu_arrays[flag][i] = jockey_ratings[flag][j_id].mu
-                jockey_sigma_arrays[flag][i] = jockey_ratings[flag][j_id].sigma
+        col_mu_horse = f"競走馬レーティング_{flag}"
+        col_sigma_horse = f"競走馬レーティング_sigma_{flag}"
+        col_mu_jockey = f"騎手レーティング__{flag}"
+        col_sigma_jockey = f"騎手レーティング_sigma_{flag}"
 
-    # -------------------------------
-    # 最後に配列の結果をまとめて DataFrame に代入
-    # -------------------------------
-    for flag in flag_cols:
-        df[f"競走馬レーティング_{flag}"] = horse_mu_arrays[flag]
-        df[f"競走馬レーティング_sigma_{flag}"] = horse_sigma_arrays[flag]
-        df[f"騎手レーティング__{flag}"] = jockey_mu_arrays[flag]
-        df[f"騎手レーティング_sigma_{flag}"] = jockey_sigma_arrays[flag]
+        df_result = pd.DataFrame({
+            col_mu_horse: horse_mu_array,
+            col_sigma_horse: horse_sigma_array,
+            col_mu_jockey: jockey_mu_array,
+            col_sigma_jockey: jockey_sigma_array
+        }, index=df.index)
+
+        return df_result
+
+    def create_flag_features_and_update_parallel(df):
+        df = df.copy()
+        df = df.drop_duplicates(subset=["race_id", "馬番"])
+        df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
+
+        df = create_flag_features(df)
+
+        flag_cols = [
+            "内枠", "中枠", "外枠",
+            "短距離", "マイル", "中距離", "クラシック", "長距離",
+            "方向_右", "方向_左", "方向_直線",
+            "芝", "ダート",
+            "大回り", "小回り", "急",
+            "急坂", "平坦", "緩坂",
+            "芝軽", "芝中", "芝重",
+            "ダート軽", "ダート中", "ダート重",
+            "ロンスパ", "瞬発力",
+            "高速", "中速", "低速",
+            "天気_晴", "天気_雨", "天気_曇", "天気_雪",
+            "馬場_良", "馬場_不", "馬場_重", "馬場_稍",
+            "平場", "重賞"
+        ]
+
+        env = trueskill.TrueSkill(draw_probability=0.0)
+
+        results = Parallel(n_jobs=-1)(
+            delayed(update_ratings_for_single_flag)(
+                df[["date", "race_id", "着順", "horse_id", "jockey_id", f]],
+                f,
+                env
+            )
+            for f in flag_cols
+        )
+
+        df_final = df.copy()
+        for res_df in results:
+            df_final = df_final.join(res_df)
+
+        return df_final
+    
+    df = create_flag_features_and_update_parallel(df)
 
     return df
 
