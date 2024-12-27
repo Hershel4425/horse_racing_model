@@ -175,6 +175,7 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
         # 描画用データフレーム作成
         if not selected_flags:
             continue
+        selected_flags = ['競走馬レーティング_' + flag for flag in selected_flags]
         race = df_show[["馬名"] + selected_flags].copy()
 
         values = race[selected_flags].values

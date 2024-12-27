@@ -623,7 +623,7 @@ def create_flag_features_and_update(df):
 
     # 各フラグ列のレーティング(mu, sigma)を格納するための列を df に追加
     for flag in flag_cols:
-        df[f"競走馬_{flag}"]   = None
+        df[f"競走馬レーティング_{flag}"]   = None
         df[f"競走馬レーティング_sigma_{flag}"] = None
         df[f"騎手レーティング__{flag}"]  = None
         df[f"騎手レーティング_sigma_{flag}"] = None
