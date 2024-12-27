@@ -621,105 +621,123 @@ def create_flag_features_and_update(df):
     horse_ratings = {flag: {} for flag in flag_cols}
     jockey_ratings = {flag: {} for flag in flag_cols}
 
-    # 各フラグ列のレーティング(mu, sigma)を格納するための列を df に追加
+    # -------------------------------
+    # カラムを先に作成（at使用回数を減らすため）
+    # -------------------------------
     for flag in flag_cols:
-        df[f"競走馬レーティング_{flag}"]   = None
-        df[f"競走馬レーティング_sigma_{flag}"] = None
-        df[f"騎手レーティング__{flag}"]  = None
-        df[f"騎手レーティング_sigma_{flag}"] = None
+        df[f"競走馬レーティング_{flag}"] = np.nan
+        df[f"競走馬レーティング_sigma_{flag}"] = np.nan
+        df[f"騎手レーティング__{flag}"] = np.nan
+        df[f"騎手レーティング_sigma_{flag}"] = np.nan
+
+    # -------------------------------
+    # グループ分割の前処理
+    # -------------------------------
+    race_groups = df.groupby("race_id", sort=False)
+    race_ids = list(race_groups.groups.keys())
+
+    # -------------------------------
+    # 結果格納用に配列を用意
+    # （dfの行数×各列を格納する）
+    # -------------------------------
+    n = len(df)
+    horse_mu_arrays   = {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
+    horse_sigma_arrays= {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
+    jockey_mu_arrays  = {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
+    jockey_sigma_arrays= {flag: np.zeros(n, dtype=np.float32) for flag in flag_cols}
 
     # レース単位でgroupbyし、時系列順に TrueSkill を更新
     # レース前の rating を各行に格納し、フラグ=1なら更新
-    for race_id, group in tqdm(df.groupby("race_id", sort=False)):
-        # 同一レース内の行インデックスを取得
-        idxs = group.index.tolist()
+    for race_id in tqdm(race_ids):
+        idxs = race_groups.groups[race_id]
+        group = df.loc[idxs, :]
+        idxs_sorted = idxs.sort_values()
 
         # ----------------------------
-        # 1) 馬のレーティング更新
-        #    フラグごとに処理を行う
+        # 先に更新前レーティングを格納
         # ----------------------------
         for flag in flag_cols:
-            # 更新に必要なデータを用意
-            participants_for_update = []  # [[Rating], [Rating], ...]
-            ranks_for_update = []
-            indices_for_update = []       # レース行のindexを覚えておく
-
-            for i in idxs:
+            for i in idxs_sorted:
                 h_id = df.at[i, "horse_id"]
-                rank = df.at[i, "着順"]
-                # 初出の馬ならRatingを初期化
+                j_id = df.at[i, "jockey_id"]
+                # 初出ならRatingを初期化
                 if h_id not in horse_ratings[flag]:
                     horse_ratings[flag][h_id] = env.create_rating()
+                if j_id not in horse_ratings[flag]:
+                    jockey_ratings[flag][j_id] = env.create_rating()
 
-                # 現時点のレーティングを格納（更新前の値を入れる）
-                df.at[i, f"競走馬レーティング_{flag}"]   = horse_ratings[flag][h_id].mu
-                df.at[i, f"競走馬レーティング_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
-
-            # 今レースのうち「flag=1」の行だけ更新対象とする
-            # ただし、rank が NaN ならスキップ
-            group_flag_1 = group[group[flag] == 1]
-            for i2 in group_flag_1.index:
-                h_id = df.at[i2, "horse_id"]
-                rank = df.at[i2, "着順"]
-                if pd.isna(rank):
-                    continue
-                participants_for_update.append([horse_ratings[flag][h_id]])
-                ranks_for_update.append(int(rank) - 1)
-                indices_for_update.append(i2)
-
-            # 実際に更新処理を走らせる (2頭以上揃っている場合のみ)
-            if len(participants_for_update) >= 2:
-                updated_ratings = env.rate(participants_for_update, ranks=ranks_for_update)
-                for ix, i2 in enumerate(indices_for_update):
-                    h_id = df.at[i2, "horse_id"]
-                    horse_ratings[flag][h_id] = updated_ratings[ix][0]
-
-            # 更新後のレーティングを格納（今回レース時点の値として扱う）
-            # フラグ=0の行も最新値を格納（更新は行われていないが、値は保持）
-            for i in idxs:
-                h_id = df.at[i, "horse_id"]
-                df.at[i, f"競走馬レーティング_{flag}"]   = horse_ratings[flag][h_id].mu
-                df.at[i, f"競走馬レーティング_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
+                horse_mu_arrays[flag][i] = horse_ratings[flag][h_id].mu
+                horse_sigma_arrays[flag][i] = horse_ratings[flag][h_id].sigma
+                jockey_mu_arrays[flag][i] = jockey_ratings[flag][j_id].mu
+                jockey_sigma_arrays[flag][i] = jockey_ratings[flag][j_id].sigma
 
         # ----------------------------
-        # 2) 騎手のレーティング更新
-        #    馬の場合と同様
+        # 馬のレーティング更新
         # ----------------------------
         for flag in flag_cols:
             participants_for_update = []
             ranks_for_update = []
             indices_for_update = []
 
-            for i in idxs:
-                j_id = df.at[i, "jockey_id"]
-                rank = df.at[i, "着順"]
-                if j_id not in jockey_ratings[flag]:
-                    jockey_ratings[flag][j_id] = env.create_rating()
-
-                df.at[i, f"騎手レーティング__{flag}"]   = jockey_ratings[flag][j_id].mu
-                df.at[i, f"騎手レーティング_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
-
             group_flag_1 = group[group[flag] == 1]
             for i2 in group_flag_1.index:
-                j_id = df.at[i2, "jockey_id"]
                 rank = df.at[i2, "着順"]
                 if pd.isna(rank):
                     continue
+                h_id = df.at[i2, "horse_id"]
+                participants_for_update.append([horse_ratings[flag][h_id]])
+                ranks_for_update.append(int(rank) - 1)
+                indices_for_update.append(i2)
+
+            if len(participants_for_update) >= 2:
+                updated = env.rate(participants_for_update, ranks=ranks_for_update)
+                for x, row_idx in enumerate(indices_for_update):
+                    h_id = df.at[row_idx, "horse_id"]
+                    horse_ratings[flag][h_id] = updated[x][0]
+
+            # 更新後の値を配列に再格納
+            for i in idxs_sorted:
+                h_id = df.at[i, "horse_id"]
+                horse_mu_arrays[flag][i] = horse_ratings[flag][h_id].mu
+                horse_sigma_arrays[flag][i] = horse_ratings[flag][h_id].sigma
+
+        # ----------------------------
+        # 騎手のレーティング更新
+        # ----------------------------
+        for flag in flag_cols:
+            participants_for_update = []
+            ranks_for_update = []
+            indices_for_update = []
+
+            group_flag_1 = group[group[flag] == 1]
+            for i2 in group_flag_1.index:
+                rank = df.at[i2, "着順"]
+                if pd.isna(rank):
+                    continue
+                j_id = df.at[i2, "jockey_id"]
                 participants_for_update.append([jockey_ratings[flag][j_id]])
                 ranks_for_update.append(int(rank) - 1)
                 indices_for_update.append(i2)
 
             if len(participants_for_update) >= 2:
-                updated_ratings = env.rate(participants_for_update, ranks=ranks_for_update)
-                for ix, i2 in enumerate(indices_for_update):
-                    j_id = df.at[i2, "jockey_id"]
-                    jockey_ratings[flag][j_id] = updated_ratings[ix][0]
+                updated = env.rate(participants_for_update, ranks=ranks_for_update)
+                for x, row_idx in enumerate(indices_for_update):
+                    j_id = df.at[row_idx, "jockey_id"]
+                    jockey_ratings[flag][j_id] = updated[x][0]
 
-            # 更新後のレーティングを再度書き込み
-            for i in idxs:
+            for i in idxs_sorted:
                 j_id = df.at[i, "jockey_id"]
-                df.at[i, f"騎手レーティング__{flag}"]   = jockey_ratings[flag][j_id].mu
-                df.at[i, f"騎手レーティング_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
+                jockey_mu_arrays[flag][i] = jockey_ratings[flag][j_id].mu
+                jockey_sigma_arrays[flag][i] = jockey_ratings[flag][j_id].sigma
+
+    # -------------------------------
+    # 最後に配列の結果をまとめて DataFrame に代入
+    # -------------------------------
+    for flag in flag_cols:
+        df[f"競走馬レーティング_{flag}"] = horse_mu_arrays[flag]
+        df[f"競走馬レーティング_sigma_{flag}"] = horse_sigma_arrays[flag]
+        df[f"騎手レーティング__{flag}"] = jockey_mu_arrays[flag]
+        df[f"騎手レーティング_sigma_{flag}"] = jockey_sigma_arrays[flag]
 
     return df
 
