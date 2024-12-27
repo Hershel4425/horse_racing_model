@@ -80,10 +80,10 @@ def create_trueskill_ratings(df):
     jockey_ratings = {}
 
     # === レース前のレーティングを保持する列を追加 ===
-    df["horse_mu_before"] = None
-    df["horse_sigma_before"] = None
-    df["jockey_mu_before"] = None
-    df["jockey_sigma_before"] = None
+    df["馬レーティング"] = None
+    df["馬レーティング_sigma"] = None
+    df["騎手レーティング"] = None
+    df["騎手レーティング_sigma"] = None
 
     # レース単位で groupby
     for race_id, group in tqdm(df.groupby("race_id", sort=False)):
@@ -106,8 +106,8 @@ def create_trueskill_ratings(df):
                 horse_ratings[h_id] = env.create_rating()
 
             # レース前のRatingをDataFrameに格納
-            df.at[i, "horse_mu_before"]   = horse_ratings[h_id].mu
-            df.at[i, "horse_sigma_before"] = horse_ratings[h_id].sigma
+            df.at[i, "馬レーティング"]   = horse_ratings[h_id].mu
+            df.at[i, "馬レーティング_sigma"] = horse_ratings[h_id].sigma
 
             # TrueSkillに渡すためのデータを作成
             # 「馬1頭 = 1チーム」→ [rating_obj] のリストにする
@@ -143,8 +143,8 @@ def create_trueskill_ratings(df):
             if j_id not in jockey_ratings:
                 jockey_ratings[j_id] = env.create_rating()
 
-            df.at[i, "jockey_mu_before"]   = jockey_ratings[j_id].mu
-            df.at[i, "jockey_sigma_before"] = jockey_ratings[j_id].sigma
+            df.at[i, "騎手レーティング"]   = jockey_ratings[j_id].mu
+            df.at[i, "騎手レーティング_sigma"] = jockey_ratings[j_id].sigma
 
             participants_jockey.append([jockey_ratings[j_id]])
             ranks_jockey.append(int(rank) - 1)
@@ -178,8 +178,8 @@ def calc_rating_mean(df):
     df = df.sort_values(['horse_id', 'date', 'race_id']).reset_index(drop=True)
 
     # レースごとにhorse_mu_beforeの平均を取る
-    df["馬平均レーティング"] = df.groupby("race_id")["horse_mu_before"].transform("mean")
-    df["騎手平均レーティング"] = df.groupby("race_id")["jockey_mu_before"].transform("mean")
+    df["馬平均レーティング"] = df.groupby("race_id")["馬レーティング"].transform("mean")
+    df["騎手平均レーティング"] = df.groupby("race_id")["騎手レーティング"].transform("mean")
 
     print("処理後DF：", df.shape)
 
@@ -269,7 +269,7 @@ def create_jockey_rating_change_feature(df):
 
     # 馬ごとにグループ化し、前走のジョッキーID と ジョッキーのレーティング を shift() で取り出す
     df["prev_jockey_id"] = df.groupby('horse_id')["jockey_id"].shift(1)
-    df["prev_jockey_mu"] = df.groupby('horse_id')["jockey_mu_before"].shift(1)
+    df["prev_騎手レーティング"] = df.groupby('horse_id')["騎手レーティング"].shift(1)
 
     # ジョッキーが変わったかどうかを判定する
     # 変わっていなければ 0、変わっていれば (今のjockey_mu - 前走のjockey_mu)
@@ -281,16 +281,16 @@ def create_jockey_rating_change_feature(df):
             return 0
         else:
             # 変化があった場合
-            if pd.isna(row["prev_jockey_mu"]):
+            if pd.isna(row["prev_騎手レーティング"]):
                 # 前走の mu が NaN (初回レース等) なら変化量は 0 と定義
                 return 0
             else:
                 # 今回のジョッキーの "jockey_mu_before" から、前回ジョッキーの "prev_jockey_mu" を引いた差をとる
-                return row["jockey_mu_before"] - row["prev_jockey_mu"]
+                return row["騎手レーティング"] - row["prev_騎手レーティング"]
             
-    df["jockey_mu_change"] = df.apply(calc_jockey_change, axis=1)
+    df["騎手レーティング_change"] = df.apply(calc_jockey_change, axis=1)
 
-    df.drop(["prev_jockey_id", "prev_jockey_mu"], axis=1, inplace=True)
+    df.drop(["prev_jockey_id", "prev_騎手レーティング"], axis=1, inplace=True)
 
     return df
 
@@ -582,52 +582,150 @@ def create_flag_features_and_update(df):
         df_["順位点"] = (df_["立て数"] - df_["着順"] + 1) / df_["立て数"]
         return df_
 
+    # ----------------------------------------
+    # 元のデータを複製してフラグ列を作成
+    # ----------------------------------------
     df = df.copy()
+    df.drop_duplicates(subset=["race_id", "馬番"], inplace=True)
+    df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
     df = create_flag_features(df)
 
-    # 更新対象列（フラグ列）
+    # ----------------------------------------
+    # ここで、フラグ列の一覧を作成
+    # ----------------------------------------
     flag_cols = [
         "内枠", "中枠", "外枠",
         "短距離", "マイル", "中距離", "クラシック", "長距離",
         "方向_右", "方向_左", "方向_直線",
         "芝", "ダート",
-        "天気_晴", "天気_雨", "天気_曇", "天気_雪",
-        "馬場_良", "馬場_不", "馬場_重", "馬場_稍",
-        "重賞", "平場",
-        "大回り","小回り","急",
+        "大回り", "小回り", "急",
         "急坂", "平坦", "緩坂",
         "芝軽", "芝中", "芝重",
         "ダート軽", "ダート中", "ダート重",
         "ロンスパ", "瞬発力",
-        "低速", "中速", "高速"
+        "高速", "中速", "低速",
+        "天気_晴", "天気_雨", "天気_曇", "天気_雪",
+        "馬場_良", "馬場_不", "馬場_重", "馬場_稍",
+        "平場", "重賞"
     ]
 
-    # horse_id, dateでソート
-    df.sort_values(["horse_id", "date"], inplace=True)
+    # ----------------------------------------
+    # フラグ列ごとに、馬 & 騎手のTrueSkillレーティングを更新
+    #   - 各フラグ用のレーティング辞書を作成
+    #   - レースごとに「フラグ=1」のもののみレーティングを更新
+    #   - フラグ=0のレースはレーティング更新せず、直前のレーティングを保持する
+    #   - 結果は各レース行に horse_mu_{flag}, horse_sigma_{flag}, 
+    #     jockey_mu_{flag}, jockey_sigma_{flag} として格納
+    # ----------------------------------------
 
-    # グループ(単一horse_id)内で、
-    # フラグを (新規値) = 0.2 * (直前レースの順位点) + 0.8 * (旧値) で更新する関数
-    # 当該行のレース順位点ではなく "直前レース" の順位点だけを使う
-    def update_flag_for_horse(group, col):
-        updated_values = []
-        val = 0.5  # 初期値
-        prev_rank = None  # 直前のレース順位点
+    # TrueSkill 環境の作成
+    env = trueskill.TrueSkill(draw_probability=0.0)
 
-        for idx, row in group.iterrows():
-            # 直前レースの順位点があれば更新
-            # 当該レースではなく「前のレースの順位点」を用いる
-            if row[col] == 1 and prev_rank is not None:
-                val = 0.2 * prev_rank + 0.8 * val
+    # フラグ列×馬(jockey)ごとのレーティングを管理する辞書
+    #   horse_ratings[flag][horse_id] -> Rating
+    #   jockey_ratings[flag][jockey_id] -> Rating
+    horse_ratings = {flag: {} for flag in flag_cols}
+    jockey_ratings = {flag: {} for flag in flag_cols}
 
-            updated_values.append(val)
-            # このレース終了後に順位点を更新して、次のレースで参照
-            prev_rank = row["順位点"]
+    # 各フラグ列のレーティング(mu, sigma)を格納するための列を df に追加
+    for flag in flag_cols:
+        df[f"horse_mu_{flag}"]   = None
+        df[f"horse_sigma_{flag}"] = None
+        df[f"jockey_mu_{flag}"]  = None
+        df[f"jockey_sigma_{flag}"] = None
 
-        return pd.Series(updated_values, index=group.index)
+    # レース単位でgroupbyし、時系列順に TrueSkill を更新
+    # レース前の rating を各行に格納し、フラグ=1なら更新
+    for race_id, group in tqdm(df.groupby("race_id", sort=False)):
+        # 同一レース内の行インデックスを取得
+        idxs = group.index.tolist()
 
-    # 各フラグ列を更新 (リーク回避のため当該行の順位点を使わない)
-    for col in tqdm(flag_cols):
-        df[col] = df.groupby("horse_id", group_keys=False).apply(lambda g: update_flag_for_horse(g, col))
+        # ----------------------------
+        # 1) 馬のレーティング更新
+        #    フラグごとに処理を行う
+        # ----------------------------
+        for flag in flag_cols:
+            # 更新に必要なデータを用意
+            participants_for_update = []  # [[Rating], [Rating], ...]
+            ranks_for_update = []
+            indices_for_update = []       # レース行のindexを覚えておく
+
+            for i in idxs:
+                h_id = df.at[i, "horse_id"]
+                rank = df.at[i, "着順"]
+                # 初出の馬ならRatingを初期化
+                if h_id not in horse_ratings[flag]:
+                    horse_ratings[flag][h_id] = env.create_rating()
+
+                # 現時点のレーティングを格納（更新前の値を入れる）
+                df.at[i, f"horse_mu_{flag}"]   = horse_ratings[flag][h_id].mu
+                df.at[i, f"horse_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
+
+            # 今レースのうち「flag=1」の行だけ更新対象とする
+            # ただし、rank が NaN ならスキップ
+            group_flag_1 = group[group[flag] == 1]
+            for i2 in group_flag_1.index:
+                h_id = df.at[i2, "horse_id"]
+                rank = df.at[i2, "着順"]
+                if pd.isna(rank):
+                    continue
+                participants_for_update.append([horse_ratings[flag][h_id]])
+                ranks_for_update.append(int(rank) - 1)
+                indices_for_update.append(i2)
+
+            # 実際に更新処理を走らせる (2頭以上揃っている場合のみ)
+            if len(participants_for_update) >= 2:
+                updated_ratings = env.rate(participants_for_update, ranks=ranks_for_update)
+                for ix, i2 in enumerate(indices_for_update):
+                    h_id = df.at[i2, "horse_id"]
+                    horse_ratings[flag][h_id] = updated_ratings[ix][0]
+
+            # 更新後のレーティングを格納（今回レース時点の値として扱う）
+            # フラグ=0の行も最新値を格納（更新は行われていないが、値は保持）
+            for i in idxs:
+                h_id = df.at[i, "horse_id"]
+                df.at[i, f"horse_mu_{flag}"]   = horse_ratings[flag][h_id].mu
+                df.at[i, f"horse_sigma_{flag}"] = horse_ratings[flag][h_id].sigma
+
+        # ----------------------------
+        # 2) 騎手のレーティング更新
+        #    馬の場合と同様
+        # ----------------------------
+        for flag in flag_cols:
+            participants_for_update = []
+            ranks_for_update = []
+            indices_for_update = []
+
+            for i in idxs:
+                j_id = df.at[i, "jockey_id"]
+                rank = df.at[i, "着順"]
+                if j_id not in jockey_ratings[flag]:
+                    jockey_ratings[flag][j_id] = env.create_rating()
+
+                df.at[i, f"jockey_mu_{flag}"]   = jockey_ratings[flag][j_id].mu
+                df.at[i, f"jockey_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
+
+            group_flag_1 = group[group[flag] == 1]
+            for i2 in group_flag_1.index:
+                j_id = df.at[i2, "jockey_id"]
+                rank = df.at[i2, "着順"]
+                if pd.isna(rank):
+                    continue
+                participants_for_update.append([jockey_ratings[flag][j_id]])
+                ranks_for_update.append(int(rank) - 1)
+                indices_for_update.append(i2)
+
+            if len(participants_for_update) >= 2:
+                updated_ratings = env.rate(participants_for_update, ranks=ranks_for_update)
+                for ix, i2 in enumerate(indices_for_update):
+                    j_id = df.at[i2, "jockey_id"]
+                    jockey_ratings[flag][j_id] = updated_ratings[ix][0]
+
+            # 更新後のレーティングを再度書き込み
+            for i in idxs:
+                j_id = df.at[i, "jockey_id"]
+                df.at[i, f"jockey_mu_{flag}"]   = jockey_ratings[flag][j_id].mu
+                df.at[i, f"jockey_sigma_{flag}"] = jockey_ratings[flag][j_id].sigma
 
     return df
 
