@@ -13,7 +13,7 @@ rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio'
 # ファイルパス設定
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")  # 特徴量CSVのパス
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/test.csv") 
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/20241227204324.csv") 
 
 def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED):
     # CSV読み込み
@@ -24,8 +24,8 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
     merged = pd.merge(df1, df2, on=["race_id", "馬番"], how="inner")
 
     # 騎手レーティングの整数化
-    merged["馬レーティング"] = merged["horse_mu_before"].round(1)
-    merged["騎手レーティング"] = merged["jockey_mu_before"].round(1)
+    merged["馬レーティング"] = merged["馬レーティング"].round(1)
+    merged["騎手レーティング"] = merged["騎手レーティング"].round(1)
 
     # 背景グラデーション用に確率列を数値化＆小数点1桁までに丸める
     merged["P_top1_val"] = (merged["P_top1"] * 100).round(1)
@@ -56,6 +56,9 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
                         "1人気以内率", "3人気以内率", "5人気以内率" ]
         # 表示
         display(df_show[display_cols].sort_values('馬番'))
+        df_html = df_show[display_cols].sort_values('馬番').to_html(index=False)
+        with open(ROOT_PATH + f'/result/visals/2024HS/{rid}.html', "w", encoding="utf-8") as f:
+            f.write(df_html)
 
         # レース全馬が同じ条件と想定して先頭行を参照
         course_type = df_show["コース種類"].iloc[0]
@@ -175,10 +178,10 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
         # 描画用データフレーム作成
         if not selected_flags:
             continue
-        selected_flags = ['競走馬レーティング_' + flag for flag in selected_flags]
-        race = df_show[["馬名"] + selected_flags].copy()
+        new_selected_flags = ['競走馬レーティング_' + flag for flag in selected_flags]
+        race = df_show[["馬名"] + new_selected_flags].copy()
 
-        values = race[selected_flags].values
+        values = race[new_selected_flags].values
         labels = selected_flags
         horse_names = race["馬名"].values
 
@@ -194,8 +197,10 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
             ax[i].plot(angles, radar_values)
             ax[i].fill(angles, radar_values, alpha=0.2)
             ax[i].set_thetagrids(angles[:-1] * 180 / np.pi, labels)
-            ax[i].set_ylim([0.0, 1.0])
+            ax[i].set_ylim([0.0, 50.0])
             ax[i].set_title(name, pad=20)
+
+        plt.savefig(ROOT_PATH + f'/result/visals/2024HS/2024HS_{rid}.png', dpi=600, bbox_inches='tight')
 
         plt.tight_layout()
         plt.show()

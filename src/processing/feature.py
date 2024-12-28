@@ -1342,6 +1342,7 @@ def run_feature():
 
     # display(df.sort_values(['date']).reset_index(drop=True).tail(5))
     display(df.loc[df['馬名'] == 'イクイノックス']) # 確認用
+    display(df.loc[(df['race_id']==202405021212)])
 
     print(df.isnull().sum())
 
