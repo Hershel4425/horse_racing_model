@@ -27,12 +27,10 @@ if not os.path.exists(MODEL_SAVE_DIR):
 
 # predictionを保存するパス
 SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/{DATE_STRING}.csv")
-# 保存先のディレクトリがなければ作成（os.path.existsだとファイルorディレクトリのどちらかだけのチェックになるので修正）
 pred_dir = os.path.dirname(SAVE_PATH_PRED)
 if not os.path.exists(pred_dir):
     os.makedirs(pred_dir)
 
-# データ読み込み先
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 
 #------------------------------------------------------------------------------------
@@ -82,21 +80,16 @@ def prepare_data(
 
     # 不要列をリストアップ（リークを防ぐための削除候補）
     default_leakage_cols = [
-            # '着順',  # 後続のコードで使用
-            '斤量', 
-            'タイム', 
-            '着差',
-            # '単勝', # 後続のコードで使用
-            '上がり3F','馬体重','人気',
-            'horse_id','jockey_id',
-            'trainer_id',
-            '順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
-            '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース',
-            '上がり3F順位','100m','200m','300m','400m','500m','600m','700m','800m','900m','1000m',
-            '1100m','1200m','1300m','1400m','1500m','1600m','1700m','1800m','1900m','2000m',
-            '2100m','2200m','2300m','2400m','2500m','2600m','2700m','2800m','2900m','3000m',
-            '3100m','3200m','3300m','3400m','3500m','3600m','horse_ability'
-        ]
+        '斤量','タイム','着差','上がり3F','馬体重','人気',
+        'horse_id','jockey_id','trainer_id','順位点','入線','1着タイム差',
+        '先位タイム差','5着着差','増減','1C通過順位','2C通過順位',
+        '3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース',
+        '上がり3F順位','100m','200m','300m','400m','500m','600m','700m',
+        '800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
+        '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m',
+        '2400m','2500m','2600m','2700m','2800m','2900m','3000m','3100m',
+        '3200m','3300m','3400m','3500m','3600m','horse_ability'
+    ]
     drop_candidates = set(default_leakage_cols)
 
     # 数値列・カテゴリ列を分ける
@@ -181,25 +174,34 @@ def prepare_data(
         jockey_features_test_pca
     ], axis=1)
 
-    actual_num_dim = other_features_train.shape[1] + pca_dim_horse + pca_dim_jockey
-
     # 各データフレームにX列を追加（各サンプルが1次元np.arrayになるように保持）
     train_df["X"] = list(X_train)
     valid_df["X"] = list(X_valid)
     test_df["X"] = list(X_test)
 
+    # このあと環境クラスのfeature_colsに渡す際の次元数などを把握しておきたい場合
+    actual_num_dim = other_features_train.shape[1] + pca_dim_horse + pca_dim_jockey
+
     return train_df, valid_df, test_df, (scaler_horse, pca_model_horse), (scaler_jockey, pca_model_jockey), scaler_other, cat_cols, actual_num_dim
 
 #------------------------------------------------------------------------------------
-# PPOで使用する環境クラス
+# Gymnasium (>=0.26) スタイルの環境クラス
 #------------------------------------------------------------------------------------
 class SingleWinBetEnvVariableHorses(gym.Env):
     """
-    単勝馬券を1レースにつき1頭だけ買うというシミュレーション環境。
-    各レースの馬ごとの特徴量をまとめてflattenしたものをobsとし、
-    アクションは「何番目の馬を買うか」をDiscretで指定する。
-    max_horsesまでパディングしているので、action_spaceはmax_horses。
+    単勝馬券を1レースにつき1頭だけ買うというシミュレーション環境 (Gymnasium形式)。
+    
+    - reset() → (obs, info)
+    - step(action) → (obs, reward, terminated, truncated, info)
+      * truncated はここでは False 固定とし、レース終了を全て terminated 扱いにする
+    
+    【注意】:
+      この形式は Gymnasium >= 0.26 の純粋なAPIです。
+      Stable-Baselines3 は旧Gymスタイルを想定しているため、
+      そのままでは互換性がなく、ラッピングが必要になることがあります。
     """
+    metadata = {"render_modes": []}
+
     def __init__(
         self, 
         df: pd.DataFrame,
@@ -213,7 +215,6 @@ class SingleWinBetEnvVariableHorses(gym.Env):
     ):
         super().__init__()
         
-        # 受け取ったパラメータを保存
         self.df = df
         self.id_col = id_col
         self.horse_col = horse_col
@@ -227,18 +228,17 @@ class SingleWinBetEnvVariableHorses(gym.Env):
         self.race_ids = df[id_col].unique().tolist()
         self.race_dfs = []
         
-        # 最大頭数を調べる(環境のobservation_spaceを固定するため)
+        # 最大頭数 (馬の数) を調べる
         self.max_horses = 0
         for rid in self.race_ids:
-            sub = df[df[id_col] == rid].copy()
-            n_horses = len(sub)
-            self.max_horses = max(self.max_horses, n_horses)
-            self.race_dfs.append(sub)
+            sub = df[df[id_col] == rid]
+            self.max_horses = max(self.max_horses, len(sub))
+            self.race_dfs.append(sub.copy())
         
         # 特徴量次元
         self.feat_dim = len(self.feature_cols)
         
-        # observation_space( [最大頭数×特徴量] のflatten )
+        # observation_space: [最大頭数×特徴量] を flatten
         self.observation_space = spaces.Box(
             low=-np.inf, 
             high=np.inf,
@@ -246,110 +246,114 @@ class SingleWinBetEnvVariableHorses(gym.Env):
             dtype=np.float32
         )
         
-        # action_space(馬を一頭選択:最大頭数の離散)
+        # action_space: 馬を一頭選択 → 最大頭数の離散
         self.action_space = spaces.Discrete(self.max_horses)
         
         self.current_race_idx = 0
-        self.done = False
-        
-        # 最初のレースをセットアップ
+        self.terminated = False
+
+        # 初期化
         self._setup_next_race()
 
     def _setup_next_race(self):
         """
-        次のレースの状態を環境にセットする。最大頭数に満たない場合は0埋めして次元を合わせる。
+        次のレースをセットアップする。
+        最大頭数に満たない場合は 0埋め でパディングし、obsの次元を揃える。
         """
         if self.current_race_idx >= len(self.race_dfs):
-            self.done = True
-            self.current_obs = np.zeros((self.max_horses * self.feat_dim,), dtype=np.float32)
+            # 全レース消化
+            self.terminated = True
+            self.current_obs = np.zeros(
+                (self.max_horses * self.feat_dim,),
+                dtype=np.float32
+            )
             self.current_subdf = None
             return
         
-        sub = self.race_dfs[self.current_race_idx].copy()
+        sub = self.race_dfs[self.current_race_idx].sort_values(self.horse_col).copy()
         n_horses = len(sub)
         
-        # 馬番でソート(アクションと馬番を紐づけるため)
-        sub = sub.sort_values(self.horse_col)
+        # 特徴量をスタック
+        feats_list = []
+        for i in range(n_horses):
+            # DataFrameの "X" 列にある np.arrayを取り出す
+            feats_list.append(sub.iloc[i]["X"])
+        sub_feats = np.array(feats_list, dtype=np.float32)
         
-        # 各馬の特徴量をスタック
-        sub_feats_list = []
-        for i in range(len(sub)):
-            # ここでDataFrameのX列(1つ1つがnp.array)を取り出してflatten
-            sub_feats_list.append(sub.iloc[i]["X"])
-        sub_feats = np.array(sub_feats_list, dtype=np.float32)
-        
-        # max_horsesに満たない場合はパディング
+        # パディング
         if n_horses < self.max_horses:
             pad_len = self.max_horses - n_horses
             pad_array = np.zeros((pad_len, self.feat_dim), dtype=np.float32)
             sub_feats = np.vstack([sub_feats, pad_array])
         
-        # Flattenしてobservationにする
         self.current_obs = sub_feats.flatten()
         self.current_subdf = sub.reset_index(drop=True)
-        self.done = False
+        self.terminated = False
 
     def reset(self, seed=None, options=None):
-        # 必要ならここでシードをセット
-        if seed is not None:
-            np.random.seed(seed)
-
-        # 現在のレースインデックスが最後まで行っていたらリセット
+        """
+        Gymnasium形式: return (obs, info)
+        """
+        super().reset(seed=seed)
+        
         if self.current_race_idx >= len(self.race_dfs):
             self.current_race_idx = 0
-
+        
         self._setup_next_race()
 
-        # obs (観測値) と info (dict) の2つを返す
+        # info はここでは空dict
         return self.current_obs, {}
-
 
     def step(self, action):
         """
-        馬を選択(action)し、その的中払い戻しをrewardとして返す。
-        レースが1回終了したらdone=Trueにして次レースへ。
+        Gymnasium形式: return (obs, reward, terminated, truncated, info)
         """
-        if self.done or self.current_subdf is None:
-            return self.current_obs, 0.0, True, {}
-        
+        if self.terminated or (self.current_subdf is None):
+            # すでに終了していたら、そのまま終了状態を返す
+            return self.current_obs, 0.0, True, False, {}
+
         sub = self.current_subdf
         n_horses = len(sub)
         
+        # 報酬計算
+        reward = 0.0
         if action < n_horses:
-            # 選択した馬が勝ったかどうか(着順が1なら勝利馬)
             row = sub.iloc[action]
-            if row[self.finishing_col] == 1:
-                reward = row[self.single_odds_col]  # 払戻金
-            else:
-                reward = 0.0
-        else:
-            # アクションが馬数より大きい場合は無効とみなし報酬0
-            reward = 0.0
-        
-        self.done = True
+            if row[self.finishing_col] == 1:  # 着順が1の馬なら的中
+                reward = row[self.single_odds_col]
+
+        # レース終了 → terminated = True
+        self.terminated = True
         self.current_race_idx += 1
-        
-        return self.current_obs, reward, True, {}
+
+        # truncated = False (タイムステップ数制限で切るわけではない)
+        truncated = False
+
+        return self.current_obs, reward, self.terminated, truncated, {}
 
 #------------------------------------------------------------------------------------
-# モデルの評価用関数
+# Gymnasium形式に合わせた評価関数
 #------------------------------------------------------------------------------------
 def evaluate_model(env: SingleWinBetEnvVariableHorses, model, cost=100):
     """
-    学習済みmodelを使ってenvを順番に進めながら、ROI(回収率)を計算する。
+    Gymnasium形式: step() → (obs, reward, terminated, truncated, info)
     """
     results = []
     total_reward = 0.0
     total_cost = 0.0
-    
+
+    # レースインデックスを最初に戻して reset
     env.current_race_idx = 0
-    obs = env.reset()
-    
+    obs, info = env.reset()
+
     while True:
-        # 現在のobsからモデルがactionを予測
+        # モデルによる予測 (SB3の場合はAPI変換が必要; 例として直接呼んでいる)
         action, _states = model.predict(obs, deterministic=True)
-        next_obs, reward, done, info = env.step(action)
-        
+
+        # Gymnasium形式でstep
+        next_obs, reward, terminated, truncated, step_info = env.step(action)
+
+        # 結果を集計
         sub = env.current_subdf
         if sub is not None and len(sub) > 0:
             race_id_value = sub.iloc[0][env.id_col]
@@ -361,13 +365,12 @@ def evaluate_model(env: SingleWinBetEnvVariableHorses, model, cost=100):
                 bet_single_odds = row_action[env.single_odds_col]
                 this_cost = cost
             else:
-                race_id_value = sub.iloc[0][env.id_col]
                 bet_horse_num = -1
                 bet_horse_name = "INVALID"
                 bet_finishing = -1
                 bet_single_odds = 0.0
                 this_cost = 0
-            
+
             results.append({
                 "race_id": race_id_value,
                 "馬番": bet_horse_num,
@@ -379,22 +382,23 @@ def evaluate_model(env: SingleWinBetEnvVariableHorses, model, cost=100):
             
             total_reward += reward
             total_cost += this_cost
-        
+
         if env.current_race_idx >= len(env.race_dfs):
+            # 全レースが終了
             break
-        
-        if done:
-            obs = env.reset()
+
+        # terminated or truncated なら次レースへ移行 (reset)
+        if terminated or truncated:
+            obs, info = env.reset()
         else:
             obs = next_obs
-    
-    # ROI(回収率)を計算
+
     roi = (total_reward / total_cost * 100.0) if total_cost > 0 else 0.0
     result_df = pd.DataFrame(results)
     return roi, result_df
 
 #------------------------------------------------------------------------------------
-# 学習および推論を実行する関数
+# 学習および推論を行う関数 (Gymnasium形式)
 #------------------------------------------------------------------------------------
 def run_training_and_inference(
     data_path=DATA_PATH,
@@ -407,15 +411,11 @@ def run_training_and_inference(
     n_epochs=10
 ):
     """
-    学習→検証→学習曲線表示→テスト評価までを一通り実施する関数。
-    最終的にテスト予測結果をCSVに保存する。
+    Gymnasium形式の環境で学習→検証→可視化→テスト評価→結果保存。
+    
+    【注意】Stable-Baselines3を直接使うには別途ラッパや互換レイヤーが必要。
     """
-
-    #--------------------------------------------------------------------------------
-    # (1) データの読み込みと前処理
-    #--------------------------------------------------------------------------------
-    # コメント: train_df, valid_df, test_df にレース単位で分割されたデータが作られ、
-    # 各行のX列に特徴量が格納される形となる。
+    # (1) データの準備
     train_df, valid_df, test_df, _, _, _, _, _ = prepare_data(
         data_path=data_path,
         id_col=id_col,
@@ -426,21 +426,13 @@ def run_training_and_inference(
         cat_cols=[]
     )
 
-    # 環境を構築するためのfeature_cols(=Xに格納されている次元)を定義
-    if len(train_df) > 0:
-        feat_dim = len(train_df.iloc[0]["X"])  # 最初のサンプルから次元数を取得
-        feature_cols = [f"feat_{i}" for i in range(feat_dim)]
-    else:
-        feature_cols = []
+    # (2) 環境に与えるfeature_colsを作成
+    feat_dim = len(train_df.iloc[0]["X"]) if len(train_df) > 0 else 0
+    feature_cols = [f"feat_{i}" for i in range(feat_dim)]
 
-    # コメント: 環境を作成するときにはDataFrameにXが入っているが、
-    # どのようにobsを構築するかはSingleWinBetEnvVariableHorsesの実装に依存している。
-    
-    #--------------------------------------------------------------------------------
-    # (2) 学習環境, 検証環境を作成
-    #--------------------------------------------------------------------------------
+    # (3) Gymnasium環境を作る
     train_env = SingleWinBetEnvVariableHorses(
-        df=train_df, 
+        df=train_df,
         feature_cols=feature_cols,
         id_col=id_col,
         horse_col=horse_col,
@@ -450,7 +442,7 @@ def run_training_and_inference(
         cost=cost
     )
     valid_env = SingleWinBetEnvVariableHorses(
-        df=valid_df, 
+        df=valid_df,
         feature_cols=feature_cols,
         id_col=id_col,
         horse_col=horse_col,
@@ -460,52 +452,40 @@ def run_training_and_inference(
         cost=cost
     )
 
-    # こちらでベクトル化(DummyVecEnvでラップ) - PPOは通常VecEnvを使うので
+    # (4) ここでは SB3 の PPO を使う例を示すが、Gymnasium互換で実行するには
+    #     gymnasium -> gym へのラッパが必要になる場合がある点に注意。
+    #     ここでは単に DummyVecEnv を使っているが、通常SB3は旧GymAPIを想定している。
     vec_train_env = DummyVecEnv([lambda: train_env])
 
-    #--------------------------------------------------------------------------------
-    # (3) モデル構築(PPO)
-    #--------------------------------------------------------------------------------
-    # コメント: ニューラルネットの設定をpolicy_kwargsなどで細かく設定可能だが、ここではデフォルト。
+    # PPOモデルを作成
     model = PPO("MlpPolicy", vec_train_env, verbose=0)
 
-    #--------------------------------------------------------------------------------
-    # (4) 学習ループを作成（epochごとにtrain_envとvalid_envのROIを計算）
-    #--------------------------------------------------------------------------------
-    train_rois = []
-    valid_rois = []
+    # (5) 簡易的な学習ループ (n_epochs 回繰り返し)
+    train_rois, valid_rois = [], []
     for epoch in range(n_epochs):
-        # 学習を1epoch(=ある程度ステップ)実施
         model.learn(total_timesteps=1000)
-        
-        # 学習後、train回収率を評価
+
         train_roi, _ = evaluate_model(train_env, model, cost=cost)
-        # valid回収率を評価
         valid_roi, _ = evaluate_model(valid_env, model, cost=cost)
 
         train_rois.append(train_roi)
         valid_rois.append(valid_roi)
-
         print(f"Epoch {epoch+1}/{n_epochs} - Train ROI: {train_roi:.2f}%, Valid ROI: {valid_roi:.2f}%")
 
-    #--------------------------------------------------------------------------------
-    # (5) 学習曲線を表示（trainとvalidのROI推移を可視化）
-    #--------------------------------------------------------------------------------
+    # (6) 学習曲線の可視化
     plt.figure(figsize=(8, 5))
     plt.plot(range(1, n_epochs+1), train_rois, label='Train ROI')
     plt.plot(range(1, n_epochs+1), valid_rois, label='Valid ROI')
     plt.xlabel('Epoch')
     plt.ylabel('ROI(%)')
-    plt.title('Learning Curve')
+    plt.title('Learning Curve (Gymnasium-style Env)')
     plt.legend()
     plt.tight_layout()
     plt.show()
 
-    #--------------------------------------------------------------------------------
-    # (6) テスト評価
-    #--------------------------------------------------------------------------------
+    # (7) テスト評価
     test_env = SingleWinBetEnvVariableHorses(
-        df=test_df, 
+        df=test_df,
         feature_cols=feature_cols,
         id_col=id_col,
         horse_col=horse_col,
@@ -518,14 +498,11 @@ def run_training_and_inference(
     test_roi, test_result_df = evaluate_model(test_env, model, cost=cost)
     print(f"Test ROI: {test_roi:.2f}%")
 
-    #--------------------------------------------------------------------------------
-    # (7) テスト結果をCSVに保存
-    #--------------------------------------------------------------------------------
-    # コメント: race_id, 馬番、馬名、着順、単勝、モデルによる掛け金(単勝購入額)を保存
+    # (8) テスト結果をCSVで保存
     test_result_df.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
 
 #------------------------------------------------------------------------------------
-# メイン呼び出し例（スクリプトとして実行する場合は下記を呼ぶ）
+# メイン呼び出し例
 #------------------------------------------------------------------------------------
 if __name__ == "__main__":
     run_training_and_inference(
