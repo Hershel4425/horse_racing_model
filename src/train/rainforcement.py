@@ -5,8 +5,8 @@ import datetime
 import numpy as np
 import pandas as pd
 
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -289,14 +289,20 @@ class SingleWinBetEnvVariableHorses(gym.Env):
         self.current_subdf = sub.reset_index(drop=True)
         self.done = False
 
-    def reset(self):
-        """
-        レースの最初の状態に戻す。
-        """
+    def reset(self, seed=None, options=None):
+        # 必要ならここでシードをセット
+        if seed is not None:
+            np.random.seed(seed)
+
+        # 現在のレースインデックスが最後まで行っていたらリセット
         if self.current_race_idx >= len(self.race_dfs):
             self.current_race_idx = 0
+
         self._setup_next_race()
-        return self.current_obs
+
+        # obs (観測値) と info (dict) の2つを返す
+        return self.current_obs, {}
+
 
     def step(self, action):
         """
