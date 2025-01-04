@@ -168,7 +168,8 @@ def prepare_data(
 ):
     if leakage_cols is None:
         leakage_cols = [
-            '斤量','タイム','着差','単勝','上がり3F','馬体重','horse_id','jockey_id',
+            '斤量','タイム','着差','単勝','上がり3F','馬体重','人気',
+            'horse_id','jockey_id',
             'trainer_id',
             # '騎手',
             '順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
