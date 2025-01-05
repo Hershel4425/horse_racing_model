@@ -300,8 +300,14 @@ class MultiRaceEnv(gym.Env):
             dtype=np.float32
         )
         
-        # 行動空間: 最大頭数のうち、どの馬を選択するか（Discrete: 馬番のindexに相当）
-        self.action_space = spaces.Discrete(self.max_horses)
+        # 行動空間: 
+        # 修正後（複数馬・変動掛け金）
+        # なぜ MultiDiscrete にするのか？
+        #  -> 各馬番に対して「掛けない(0)〜複数単位賭ける(n)」を同時に表現するため。
+        #     例えば [4]*self.max_horses とすれば 0〜3 の4パターンの賭け方が取れる。
+        max_bet = 3  # 例として、「1馬に対して最大3単位賭けられる」とする
+        self.action_space = spaces.MultiDiscrete([max_bet + 1] * self.max_horses)
+
 
         # エピソード内でのレース順序をシャッフルするためのリストや状態を初期化
         self.sampled_races = []
@@ -372,19 +378,26 @@ class MultiRaceEnv(gym.Env):
         race_df = self.race_map[rid]
         n_horses = len(race_df)
 
+        # action は長さ self.max_horses のベクトル（各要素が0〜max_bet）。
+        # 例: action = [2, 0, 3, 1, 0, ...] -> 馬1に2単位、馬3に3単位、馬4に1単位のように賭ける。
         reward = 0.0
-        # actionがレースの頭数以上(パディング部分)なら無効とみなし、コストを失う
-        if action < n_horses:
-            row = race_df.iloc[action]
-            # 1着の場合はオッズ×賭け金 - コストを報酬として計算
-            if row[self.finishing_col] == 1:
-                odds = row[self.single_odds_col]
-                reward = odds / 100 - self.cost
-            else:
-                # 外れた場合は賭け金を失う
-                reward = -self.cost
-        else:
-            reward = -self.cost
+
+        # 各馬に対して賭け金を処理
+        for i in range(self.max_horses):
+            bet_units = action[i]  # i番目の馬への「何単位賭けるか」
+            cost_i = bet_units * self.cost  # その馬への実コスト (例: 1単位=100円相当、など)
+
+            # まず賭けた分だけ支出(マイナス)とする
+            reward -= cost_i
+
+            # 出走馬数(n_horses)より i が小さければ実在する馬なので、勝利判定
+            if i < n_horses:
+                row = race_df.iloc[i]
+                if row[self.finishing_col] == 1:
+                    # 勝った馬(1着)ならオッズ分の払い戻しを受ける
+                    odds = row[self.single_odds_col]
+                    reward += cost_i * (odds / 100)
+
 
         # 次のレースへ
         self.current_race_idx += 1
@@ -420,38 +433,54 @@ def evaluate_model(env: MultiRaceEnv, model):
         # レースごとのデータを取り出し、観測を作成してモデルに入力
         subdf = env.race_map[rid].sort_values(env.horse_col).reset_index(drop=True)
         obs = env._get_obs_for_race(subdf)
+        # なぜ複数ベットを展開するのか？
+        #  -> "action" は [馬1への掛け単位, 馬2への掛け単位, ...] のベクトルだから。
         action, _ = model.predict(obs, deterministic=True)
         n_horses = len(subdf)
 
+        # このレース全体のコスト・利益を集計
+        race_cost = 0.0
+        race_profit = 0.0
+
         # 報酬計算を模擬（step関数を呼ばずに、ここでそのまま計算する）
-        if action < n_horses:
-            row = subdf.iloc[action]
-            odds = row[env.single_odds_col]
-            finishing = row[env.finishing_col]
-            if finishing == 1:
-                profit_sum += odds / 100 - env.cost
-            else:
-                profit_sum -= env.cost
-        else:
-            profit_sum -= env.cost
-        
-        cost_sum += env.cost
+        for i in range(env.max_horses):
+            bet_units = action[i]
+            bet_amount = bet_units * env.cost  # 実際に掛けた金額
+            race_cost += bet_amount
+
+            if i < n_horses:
+                row_i = subdf.iloc[i]
+                finishing = row_i[env.finishing_col]
+                odds = row_i[env.single_odds_col]
+
+                # 着順が1位であればオッズ×bet_amount の払い戻し
+                if finishing == 1:
+                    race_profit += bet_amount * (odds / 100)
+
+        # 総利益 = 払い戻し - 掛け金
+        net_race_profit = race_profit - race_cost
+        profit_sum += net_race_profit
+        cost_sum += race_cost
 
         # どの馬を選択したかを記録
-        for i in range(len(subdf)):
+        # 結果保存 (各馬ごとに "bet_amount" として入れる)
+        for i in range(n_horses):
             row_i = subdf.iloc[i]
-            selected_flag = (i == action and action < n_horses)
+            bet_units = action[i]
+            bet_amount = bet_units * env.cost
+
             results.append({
                 "race_id": rid,
                 "馬番": row_i[env.horse_col],
                 "馬名": row_i[env.horse_name_col],
                 "着順": row_i[env.finishing_col],
                 "単勝": row_i[env.single_odds_col],
-                "selected_flag": selected_flag
+                # 修正前は selected_flag だったが、今は bet_amount を保存
+                "bet_amount": bet_amount
             })
     
-    # ROI = (利益合計 / コスト合計) * 10000
-    roi = (profit_sum / cost_sum * 10000) if cost_sum > 0 else 0.0
+    # ROI = (利益合計 / コスト合計)
+    roi = (profit_sum / cost_sum) if cost_sum > 0 else 0.0
     return roi, pd.DataFrame(results)
 
 
@@ -592,9 +621,9 @@ def run_training_and_inference(
     # PPOモデルを初期化。なぜPPOか？
     # -> シンプルで安定した強化学習アルゴリズムであり、ハイパーパラメータをある程度簡単に調整できる
     ppo_hyperparams = {
-        "learning_rate": 3e-4,
-        "n_steps": 4096,
-        "batch_size": 512,
+        "learning_rate": 1e-4,
+        "n_steps": 1024,
+        "batch_size": 256,
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "clip_range": 0.2,
