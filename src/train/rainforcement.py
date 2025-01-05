@@ -1,6 +1,7 @@
 import os
 import re
 import datetime
+import random
 
 import numpy as np
 import pandas as pd
@@ -13,34 +14,25 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
 
-#------------------------------------------------------------------------------------
-# ファイルパスやディレクトリ、設定の定義
-#------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+# パスや設定
+# ------------------------------------------------------------------------------------
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-
 MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transormer予測モデル/{DATE_STRING}")
 if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
-
-# predictionを保存するパス
 SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/強化学習/{DATE_STRING}.csv")
 pred_dir = os.path.dirname(SAVE_PATH_PRED)
 if not os.path.exists(pred_dir):
     os.makedirs(pred_dir)
-
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 
-#------------------------------------------------------------------------------------
-# データ分割用関数
-#------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+# データ分割関数
+# ------------------------------------------------------------------------------------
 def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
-    """
-    日付順にソートしてから、レースIDのリストをシャッフルなしで分割。
-    デフォルトはtrain:0.8, valid:0.1, test:0.1のイメージ。
-    """
     df = df.sort_values('date').reset_index(drop=True)
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
@@ -49,16 +41,14 @@ def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
     train_ids = race_ids[:valid_cut]
     valid_ids = race_ids[valid_cut:test_cut]
     test_ids = race_ids[test_cut:]
-
     train_df = df[df[id_col].isin(train_ids)].copy()
     valid_df = df[df[id_col].isin(valid_ids)].copy()
     test_df = df[df[id_col].isin(test_ids)].copy()
-    
     return train_df, valid_df, test_df
 
-#------------------------------------------------------------------------------------
-# PCAやスケーリングを行い、特徴量を作成するための関数
-#------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+# PCAやスケーリング
+# ------------------------------------------------------------------------------------
 def prepare_data(
     data_path,
     id_col='race_id',
@@ -70,344 +60,259 @@ def prepare_data(
     finishing_col='着順',
     single_odds_col='単勝'
 ):
-    """
-    データを読み込み、PCAやスケーリングなどの前処理を実施。
-    この関数が出力するtrain_df, valid_df, test_dfには「X」列に特徴量が格納される。
-    """
     if cat_cols is None:
         cat_cols = []
-
-    # CSV読み込み
     df = pd.read_csv(data_path, encoding="utf_8_sig")
-
-    # 不要列をリストアップ（リークを防ぐための削除候補）
     default_leakage_cols = [
-        '斤量','タイム','着差','上がり3F','馬体重','人気',
-        # '単勝','着順', # 学習に用いるためここは削除しない
-        'horse_id','jockey_id','trainer_id','順位点','入線','1着タイム差',
-        '先位タイム差','5着着差','増減','1C通過順位','2C通過順位',
-        '3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース',
-        '上がり3F順位','100m','200m','300m','400m','500m','600m','700m',
-        '800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
-        '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m',
-        '2400m','2500m','2600m','2700m','2800m','2900m','3000m','3100m',
-        '3200m','3300m','3400m','3500m','3600m','horse_ability'
+        '斤量','タイム','着差','上がり3F','馬体重','人気','horse_id','jockey_id','trainer_id','順位点',
+        '入線','1着タイム差','先位タイム差','5着着差','増減','1C通過順位','2C通過順位','3C通過順位',
+        '4C通過順位','賞金','前半ペース','後半ペース','ペース','上がり3F順位','100m','200m','300m',
+        '400m','500m','600m','700m','800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
+        '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m','2400m','2500m','2600m',
+        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m','horse_ability'
     ]
-    drop_candidates = set(default_leakage_cols)
     df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
-
-    # 数値列・カテゴリ列を分ける
-    # 数値列を抽出 (ただし着順と単勝は学習に使わない -> 除外)
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     if finishing_col in num_cols:
         num_cols.remove(finishing_col)
     if single_odds_col in num_cols:
         num_cols.remove(single_odds_col)
-    # カテゴリ列
     cat_cols = [c for c in cat_cols if c in df.columns]
-
-    # 数値列の欠損埋めを0で実施
     for c in num_cols:
         df[c] = df[c].fillna(0)
-
-    # 学習/検証/テストに分割
-    train_df, valid_df, test_df = split_data(
-        df, id_col=id_col,
-        test_ratio=test_ratio, valid_ratio=valid_ratio
-    )
-
-    # Horse / Jockey特徴量に対してPCAを実施したいのでパターン定義
+    train_df, valid_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio, valid_ratio=valid_ratio)
     pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
     pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
-
     pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
     pca_jockey_target_cols = [c for c in num_cols if re.match(pca_pattern_jockey, c)]
     other_num_cols = [
-        c for c in num_cols 
-        if (c not in pca_horse_target_cols) 
-        and (c not in pca_jockey_target_cols) 
-        and (c not in drop_candidates)
+        c for c in num_cols
+        if c not in pca_horse_target_cols
+        and c not in pca_jockey_target_cols
     ]
-
-    # Horseに対するPCA
     scaler_horse = StandardScaler()
-    horse_features_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols].values)
-    horse_features_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols].values)
-    horse_features_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols].values)
-
-    pca_dim_horse = min(pca_dim_horse, horse_features_train_scaled.shape[1])
-    pca_model_horse = PCA(n_components=pca_dim_horse)
-    horse_features_train_pca = pca_model_horse.fit_transform(horse_features_train_scaled)
-    horse_features_valid_pca = pca_model_horse.transform(horse_features_valid_scaled)
-    horse_features_test_pca = pca_model_horse.transform(horse_features_test_scaled)
-
-    # Jockeyに対するPCA
+    if len(pca_horse_target_cols) > 0:
+        horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
+        horse_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols])
+        horse_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols])
+    else:
+        horse_train_scaled = np.zeros((len(train_df), 0))
+        horse_valid_scaled = np.zeros((len(valid_df), 0))
+        horse_test_scaled = np.zeros((len(test_df), 0))
+    pca_dim_horse = min(pca_dim_horse, horse_train_scaled.shape[1]) if horse_train_scaled.shape[1] > 0 else 0
+    if pca_dim_horse > 0:
+        pca_model_horse = PCA(n_components=pca_dim_horse)
+        horse_train_pca = pca_model_horse.fit_transform(horse_train_scaled)
+        horse_valid_pca = pca_model_horse.transform(horse_valid_scaled)
+        horse_test_pca = pca_model_horse.transform(horse_test_scaled)
+    else:
+        pca_model_horse = None
+        horse_train_pca = horse_train_scaled
+        horse_valid_pca = horse_valid_scaled
+        horse_test_pca = horse_test_scaled
     scaler_jockey = StandardScaler()
-    jockey_features_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols].values)
-    jockey_features_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols].values)
-    jockey_features_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols].values)
-
-    pca_dim_jockey = min(pca_dim_jockey, jockey_features_train_scaled.shape[1])
-    pca_model_jockey = PCA(n_components=pca_dim_jockey)
-    jockey_features_train_pca = pca_model_jockey.fit_transform(jockey_features_train_scaled)
-    jockey_features_valid_pca = pca_model_jockey.transform(jockey_features_valid_scaled)
-    jockey_features_test_pca = pca_model_jockey.transform(jockey_features_test_scaled)
-
-    # その他数値列
+    if len(pca_jockey_target_cols) > 0:
+        jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
+        jockey_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols])
+        jockey_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols])
+    else:
+        jockey_train_scaled = np.zeros((len(train_df), 0))
+        jockey_valid_scaled = np.zeros((len(valid_df), 0))
+        jockey_test_scaled = np.zeros((len(test_df), 0))
+    pca_dim_jockey = min(pca_dim_jockey, jockey_train_scaled.shape[1]) if jockey_train_scaled.shape[1] > 0 else 0
+    if pca_dim_jockey > 0:
+        pca_model_jockey = PCA(n_components=pca_dim_jockey)
+        jockey_train_pca = pca_model_jockey.fit_transform(jockey_train_scaled)
+        jockey_valid_pca = pca_model_jockey.transform(jockey_valid_scaled)
+        jockey_test_pca = pca_model_jockey.transform(jockey_test_scaled)
+    else:
+        pca_model_jockey = None
+        jockey_train_pca = jockey_train_scaled
+        jockey_valid_pca = jockey_valid_scaled
+        jockey_test_pca = jockey_test_scaled
     scaler_other = StandardScaler()
-    other_features_train = scaler_other.fit_transform(train_df[other_num_cols].values)
-    other_features_valid = scaler_other.transform(valid_df[other_num_cols].values)
-    other_features_test = scaler_other.transform(test_df[other_num_cols].values)
-
-    # カテゴリ列(今回は単純にone-hotなどせずに、cat_featuresのままstack)
-    cat_features_train = train_df[cat_cols].values if cat_cols else np.array([]).reshape(len(train_df), 0)
-    cat_features_valid = valid_df[cat_cols].values if cat_cols else np.array([]).reshape(len(valid_df), 0)
-    cat_features_test = test_df[cat_cols].values if cat_cols else np.array([]).reshape(len(test_df), 0)
-
-    # 上記特徴量を結合してXに格納
-    X_train = np.concatenate([
-        cat_features_train,
-        other_features_train,
-        horse_features_train_pca,
-        jockey_features_train_pca
-    ], axis=1)
-    X_valid = np.concatenate([
-        cat_features_valid,
-        other_features_valid,
-        horse_features_valid_pca,
-        jockey_features_valid_pca
-    ], axis=1)
-    X_test = np.concatenate([
-        cat_features_test,
-        other_features_test,
-        horse_features_test_pca,
-        jockey_features_test_pca
-    ], axis=1)
-
-    # 各データフレームにX列を追加（各サンプルが1次元np.arrayになるように保持）
+    if len(other_num_cols) > 0:
+        other_train = scaler_other.fit_transform(train_df[other_num_cols])
+        other_valid = scaler_other.transform(valid_df[other_num_cols])
+        other_test = scaler_other.transform(test_df[other_num_cols])
+    else:
+        other_train = np.zeros((len(train_df), 0))
+        other_valid = np.zeros((len(valid_df), 0))
+        other_test = np.zeros((len(test_df), 0))
+    cat_features_train = train_df[cat_cols].values if cat_cols else np.zeros((len(train_df), 0))
+    cat_features_valid = valid_df[cat_cols].values if cat_cols else np.zeros((len(valid_df), 0))
+    cat_features_test = test_df[cat_cols].values if cat_cols else np.zeros((len(test_df), 0))
+    X_train = np.concatenate([cat_features_train, other_train, horse_train_pca, jockey_train_pca], axis=1)
+    X_valid = np.concatenate([cat_features_valid, other_valid, horse_valid_pca, jockey_valid_pca], axis=1)
+    X_test = np.concatenate([cat_features_test, other_test, horse_test_pca, jockey_test_pca], axis=1)
     train_df["X"] = list(X_train)
     valid_df["X"] = list(X_valid)
     test_df["X"] = list(X_test)
+    actual_num_dim = X_train.shape[1]
+    return (
+        train_df, valid_df, test_df,
+        (scaler_horse, pca_model_horse), (scaler_jockey, pca_model_jockey), scaler_other,
+        cat_cols, actual_num_dim
+    )
 
-    # このあと環境クラスのfeature_colsに渡す際の次元数などを把握しておきたい場合
-    actual_num_dim = other_features_train.shape[1] + pca_dim_horse + pca_dim_jockey
-
-    return train_df, valid_df, test_df, (scaler_horse, pca_model_horse), (scaler_jockey, pca_model_jockey), scaler_other, cat_cols, actual_num_dim
-
-#------------------------------------------------------------------------------------
-# Gymnasium (>=0.26) スタイルの環境クラス
-#------------------------------------------------------------------------------------
-class SingleWinBetEnvVariableHorses(gym.Env):
+# ------------------------------------------------------------------------------------
+# 複数レースを1エピソードとして学習する環境 (Gymnasium形式)
+# ------------------------------------------------------------------------------------
+class MultiRaceEnv(gym.Env):
     """
-    単勝馬券を1レースにつき1頭だけ買うというシミュレーション環境 (Gymnasium形式)。
-    
-    - reset() → (obs, info)
-    - step(action) → (obs, reward, terminated, truncated, info)
-      * truncated はここでは False 固定とし、レース終了を全て terminated 扱いにする
-    
-    【注意】:
-      この形式は Gymnasium >= 0.26 の純粋なAPIです。
-      Stable-Baselines3 は旧Gymスタイルを想定しているため、
-      そのままでは互換性がなく、ラッピングが必要になることがあります。
+    1エピソードを複数レース分にして学習効率を上げる環境例。
+    - reset()でランダムに複数レースをサンプリング
+    - step()を複数回行い、サンプリングしたレース群を順番に処理
+    - 報酬は「的中時の配当 - cost」を採用する
     """
     metadata = {"render_modes": []}
 
     def __init__(
-        self, 
+        self,
         df: pd.DataFrame,
-        feature_cols: list,
+        feature_dim: int,
         id_col="race_id",
         horse_col="馬番",
         horse_name_col="馬名",
         single_odds_col="単勝",
-        finishing_col="着順", 
-        cost=100
+        finishing_col="着順",
+        cost=100,
+        races_per_episode=128
     ):
         super().__init__()
-        
         self.df = df
         self.id_col = id_col
         self.horse_col = horse_col
         self.horse_name_col = horse_name_col
         self.single_odds_col = single_odds_col
         self.finishing_col = finishing_col
-        self.feature_cols = feature_cols
         self.cost = cost
+        self.feature_dim = feature_dim
+        self.races_per_episode = races_per_episode
 
-        # 全レースIDを取得
         self.race_ids = df[id_col].unique().tolist()
-        self.race_dfs = []
-        
-        # 最大頭数 (馬の数) を調べる
-        self.max_horses = 0
+        self.race_map = {}
+        max_horses = 0
         for rid in self.race_ids:
-            sub = df[df[id_col] == rid]
-            self.max_horses = max(self.max_horses, len(sub))
-            self.race_dfs.append(sub.copy())
-        
-        # 特徴量次元
-        self.feat_dim = len(self.feature_cols)
-        
-        # observation_space: [最大頭数×特徴量] を flatten
+            subdf = df[df[id_col] == rid].copy().sort_values(self.horse_col)
+            max_horses = max(max_horses, len(subdf))
+            self.race_map[rid] = subdf
+        self.max_horses = max_horses
+
         self.observation_space = spaces.Box(
-            low=-np.inf, 
+            low=-np.inf,
             high=np.inf,
-            shape=(self.max_horses * self.feat_dim,),
+            shape=(self.max_horses * self.feature_dim,),
             dtype=np.float32
         )
-        
-        # action_space: 馬を一頭選択 → 最大頭数の離散
         self.action_space = spaces.Discrete(self.max_horses)
-        
+
+        self.sampled_races = []
         self.current_race_idx = 0
+        self.current_obs = None
         self.terminated = False
 
-        # 初期化
-        self._setup_next_race()
-
-    def _setup_next_race(self):
-        """
-        次のレースをセットアップする。
-        最大頭数に満たない場合は 0埋め でパディングし、obsの次元を揃える。
-        """
-        if self.current_race_idx >= len(self.race_dfs):
-            # 全レース消化
-            self.terminated = True
-            self.current_obs = np.zeros(
-                (self.max_horses * self.feat_dim,),
-                dtype=np.float32
-            )
-            self.current_subdf = None
-            return
-        
-        sub = self.race_dfs[self.current_race_idx].sort_values(self.horse_col).copy()
-        n_horses = len(sub)
-        
-        # 特徴量をスタック
-        feats_list = []
+    def _get_obs_for_race(self, race_df: pd.DataFrame):
+        n_horses = len(race_df)
+        feats = []
         for i in range(n_horses):
-            # DataFrameの "X" 列にある np.arrayを取り出す
-            feats_list.append(sub.iloc[i]["X"])
-        sub_feats = np.array(feats_list, dtype=np.float32)
-        
-        # パディング
+            feats.append(race_df.iloc[i]["X"])
+        feats = np.array(feats, dtype=np.float32)
         if n_horses < self.max_horses:
             pad_len = self.max_horses - n_horses
-            pad_array = np.zeros((pad_len, self.feat_dim), dtype=np.float32)
-            sub_feats = np.vstack([sub_feats, pad_array])
-        
-        self.current_obs = sub_feats.flatten()
-        self.current_subdf = sub.reset_index(drop=True)
-        self.terminated = False
+            pad = np.zeros((pad_len, self.feature_dim), dtype=np.float32)
+            feats = np.vstack([feats, pad])
+        return feats.flatten()
+
+    def _select_races_for_episode(self):
+        # 5万レース中からランダムに self.races_per_episode 分だけ抽出して順序もシャッフル
+        self.sampled_races = random.sample(self.race_ids, k=self.races_per_episode)
+        random.shuffle(self.sampled_races)
 
     def reset(self, seed=None, options=None):
-        """
-        Gymnasium形式: return (obs, info)
-        """
         super().reset(seed=seed)
-        
-        if self.current_race_idx >= len(self.race_dfs):
-            self.current_race_idx = 0
-        
-        self._setup_next_race()
-
-        # info はここでは空dict
+        self._select_races_for_episode()
+        self.current_race_idx = 0
+        self.terminated = False
+        race_df = self.race_map[self.sampled_races[self.current_race_idx]]
+        self.current_obs = self._get_obs_for_race(race_df)
         return self.current_obs, {}
 
     def step(self, action):
-        """
-        Gymnasium形式: return (obs, reward, terminated, truncated, info)
-        """
-        if self.terminated or (self.current_subdf is None):
-            # すでに終了していたら、そのまま終了状態を返す
+        if self.terminated:
             return self.current_obs, 0.0, True, False, {}
 
-        sub = self.current_subdf
-        n_horses = len(sub)
-        
-        # 報酬計算
+        rid = self.sampled_races[self.current_race_idx]
+        race_df = self.race_map[rid]
+        n_horses = len(race_df)
+
         reward = 0.0
         if action < n_horses:
-            row = sub.iloc[action]
-            if row[self.finishing_col] == 1:  # 着順が1の馬なら的中
-                reward = row[self.single_odds_col]
-
-        # レース終了 → terminated = True
-        self.terminated = True
-        self.current_race_idx += 1
-
-        # truncated = False (タイムステップ数制限で切るわけではない)
-        truncated = False
-
-        return self.current_obs, reward, self.terminated, truncated, {}
-
-#------------------------------------------------------------------------------------
-# Gymnasium形式に合わせた評価関数
-#------------------------------------------------------------------------------------
-def evaluate_model(env: SingleWinBetEnvVariableHorses, model, cost=100):
-    """
-    Gymnasium形式: step() → (obs, reward, terminated, truncated, info)
-    """
-    results = []
-    total_reward = 0.0
-    total_cost = 0.0
-
-    # レースインデックスを最初に戻して reset
-    env.current_race_idx = 0
-    obs, info = env.reset()
-
-    while True:
-        # モデルによる予測 (SB3の場合はAPI変換が必要; 例として直接呼んでいる)
-        action, _states = model.predict(obs, deterministic=True)
-
-        # Gymnasium形式でstep
-        next_obs, reward, terminated, truncated, step_info = env.step(action)
-
-        # 結果を集計
-        sub = env.current_subdf
-        if sub is not None and len(sub) > 0:
-            race_id_value = sub.iloc[0][env.id_col]
-
-            # action が有効範囲かどうか判定
-            valid_action = (0 <= action < len(sub))
-
-            for i in range(len(sub)):
-                row_i = sub.iloc[i]
-                selected_flag = (i == action and valid_action)
-                
-                # 選択された馬のみ cost を計上し、それ以外の馬は cost=0
-                this_cost = cost if selected_flag else 0
-                total_cost += this_cost
-                
-                results.append({
-                    "race_id": race_id_value,
-                    "馬番": row_i[env.horse_col],
-                    "馬名": row_i[env.horse_name_col],
-                    "着順": row_i[env.finishing_col],
-                    "単勝": row_i[env.single_odds_col],
-                    "selected_flag": selected_flag
-                })
-
-            if reward != 999: # 単勝データが存在しないデータが999になっているため
-                total_reward += reward
-
-        if env.current_race_idx >= len(env.race_dfs):
-            # 全レースが終了
-            break
-
-        # terminated or truncated なら次レースへ移行 (reset)
-        if terminated or truncated:
-            obs, info = env.reset()
+            row = race_df.iloc[action]
+            if row[self.finishing_col] == 1:
+                odds = row[self.single_odds_col]
+                reward = odds * 100 - self.cost
+            else:
+                reward = -self.cost
         else:
-            obs = next_obs
+            reward = -self.cost
 
-    roi = (total_reward / total_cost * 100.0) if total_cost > 0 else 0.0
-    result_df = pd.DataFrame(results)
-    return roi, result_df
+        self.current_race_idx += 1
+        terminated = (self.current_race_idx >= self.races_per_episode)
+        truncated = False
+        self.terminated = terminated
+        if not terminated:
+            next_rid = self.sampled_races[self.current_race_idx]
+            next_race_df = self.race_map[next_rid]
+            obs = self._get_obs_for_race(next_race_df)
+            self.current_obs = obs
+        else:
+            obs = self.current_obs
+        return obs, float(reward), terminated, truncated, {}
 
-#------------------------------------------------------------------------------------
-# 学習および推論を行う関数 (Gymnasium形式)
-#------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+# 評価用 (Gymnasium形式)
+# ------------------------------------------------------------------------------------
+def evaluate_model(env: MultiRaceEnv, model):
+    original_ids = env.race_ids
+    cost_sum = 0.0
+    profit_sum = 0.0
+    results = []
+
+    # 全レースをランダムではなく順序で評価
+    for rid in original_ids:
+        subdf = env.race_map[rid].sort_values(env.horse_col).reset_index(drop=True)
+        obs = env._get_obs_for_race(subdf)
+        action, _ = model.predict(obs, deterministic=True)
+        n_horses = len(subdf)
+        if action < n_horses:
+            row = subdf.iloc[action]
+            odds = row[env.single_odds_col]
+            finishing = row[env.finishing_col]
+            if finishing == 1:
+                profit_sum += odds * 100 - env.cost
+            else:
+                profit_sum -= env.cost
+        else:
+            profit_sum -= env.cost
+        cost_sum += env.cost
+        for i in range(len(subdf)):
+            row_i = subdf.iloc[i]
+            selected_flag = (i == action and action < n_horses)
+            results.append({
+                "race_id": rid,
+                "馬番": row_i[env.horse_col],
+                "馬名": row_i[env.horse_name_col],
+                "着順": row_i[env.finishing_col],
+                "単勝": row_i[env.single_odds_col],
+                "selected_flag": selected_flag
+            })
+    roi = (profit_sum / cost_sum * 100) if cost_sum > 0 else 0.0
+    return roi, pd.DataFrame(results)
+
+# ------------------------------------------------------------------------------------
+# 学習・推論
+# ------------------------------------------------------------------------------------
 def run_training_and_inference(
     data_path=DATA_PATH,
     id_col='race_id',
@@ -416,16 +321,10 @@ def run_training_and_inference(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
-    batch_size = 256,
-    n_epochs=10
+    total_timesteps=200000,
+    races_per_episode=128
 ):
-    """
-    Gymnasium形式の環境で学習→検証→可視化→テスト評価→結果保存。
-    
-    【注意】Stable-Baselines3を直接使うには別途ラッパや互換レイヤーが必要。
-    """
-    # (1) データの準備
-    train_df, valid_df, test_df, _, _, _, _, _ = prepare_data(
+    train_df, valid_df, test_df, _, _, _, _, dim = prepare_data(
         data_path=data_path,
         id_col=id_col,
         test_ratio=0.1,
@@ -434,87 +333,64 @@ def run_training_and_inference(
         pca_dim_jockey=50,
         cat_cols=[]
     )
-
-    # (2) 環境に与えるfeature_colsを作成
-    feat_dim = len(train_df.iloc[0]["X"]) if len(train_df) > 0 else 0
-    feature_cols = [f"feat_{i}" for i in range(feat_dim)]
-
-    # (3) Gymnasium環境を作る
-    train_env = SingleWinBetEnvVariableHorses(
+    train_env = MultiRaceEnv(
         df=train_df,
-        feature_cols=feature_cols,
+        feature_dim=dim,
         id_col=id_col,
         horse_col=horse_col,
         horse_name_col=horse_name_col,
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
-        cost=cost
+        cost=cost,
+        races_per_episode=races_per_episode
     )
-    valid_env = SingleWinBetEnvVariableHorses(
+    valid_env = MultiRaceEnv(
         df=valid_df,
-        feature_cols=feature_cols,
+        feature_dim=dim,
         id_col=id_col,
         horse_col=horse_col,
         horse_name_col=horse_name_col,
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
-        cost=cost
+        cost=cost,
+        races_per_episode=races_per_episode
     )
-
-    # (4) ここでは SB3 の PPO を使う例を示す
     vec_train_env = DummyVecEnv([lambda: train_env])
-
-    # PPOモデルを作成
     model = PPO(
-            policy="MlpPolicy", 
-            env=vec_train_env, 
-            batch_size = batch_size,
-            verbose=1)
+        "MlpPolicy",
+        env=vec_train_env,
+        verbose=1,
+        batch_size=256,
+        n_steps=2048
+    )
+    # 学習
+    model.learn(total_timesteps=total_timesteps)
+    # 評価 (train)
+    train_roi, _ = evaluate_model(train_env, model)
+    print(f"Train ROI: {train_roi:.2f}%")
+    # 評価 (valid)
+    valid_roi, _ = evaluate_model(valid_env, model)
+    print(f"Valid ROI: {valid_roi:.2f}%")
 
-    # (5) 簡易的な学習ループ (n_epochs 回繰り返し)
-    train_rois, valid_rois = [], []
-    for epoch in range(n_epochs):
-        model.learn(total_timesteps=1000)
-
-        train_roi, _ = evaluate_model(train_env, model, cost=cost)
-        valid_roi, _ = evaluate_model(valid_env, model, cost=cost)
-
-        train_rois.append(train_roi)
-        valid_rois.append(valid_roi)
-        print(f"Epoch {epoch+1}/{n_epochs} - Train ROI: {train_roi:.2f}%, Valid ROI: {valid_roi:.2f}%")
-
-    # (6) 学習曲線の可視化
-    plt.figure(figsize=(8, 5))
-    plt.plot(range(1, n_epochs+1), train_rois, label='Train ROI')
-    plt.plot(range(1, n_epochs+1), valid_rois, label='Valid ROI')
-    plt.xlabel('Epoch')
-    plt.ylabel('ROI(%)')
-    plt.title('Learning Curve (Gymnasium-style Env)')
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-    # (7) テスト評価
-    test_env = SingleWinBetEnvVariableHorses(
+    # テスト評価
+    test_env = MultiRaceEnv(
         df=test_df,
-        feature_cols=feature_cols,
+        feature_dim=dim,
         id_col=id_col,
         horse_col=horse_col,
         horse_name_col=horse_name_col,
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
-        cost=cost
+        cost=cost,
+        races_per_episode=races_per_episode
     )
-
-    test_roi, test_result_df = evaluate_model(test_env, model, cost=cost)
+    test_roi, test_df_out = evaluate_model(test_env, model)
     print(f"Test ROI: {test_roi:.2f}%")
+    test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
 
-    # (8) テスト結果をCSVで保存
-    test_result_df.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
-
-#------------------------------------------------------------------------------------
-# メイン呼び出し例
-#------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+# メイン実行
+# ------------------------------------------------------------------------------------
 if __name__ == "__main__":
     run_training_and_inference(
         data_path=DATA_PATH,
@@ -524,5 +400,6 @@ if __name__ == "__main__":
         single_odds_col='単勝',
         finishing_col='着順',
         cost=100,
-        n_epochs=10
+        total_timesteps=200000,
+        races_per_episode=128
     )
