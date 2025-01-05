@@ -379,7 +379,7 @@ class MultiRaceEnv(gym.Env):
             # 1着の場合はオッズ×賭け金 - コストを報酬として計算
             if row[self.finishing_col] == 1:
                 odds = row[self.single_odds_col]
-                reward = odds * 100 - self.cost
+                reward = odds - self.cost
             else:
                 # 外れた場合は賭け金を失う
                 reward = -self.cost
@@ -501,13 +501,20 @@ class StatsCallback(BaseCallback):
         Why:
           - 訓練の安定性や過学習をグラフで把握しやすくする
         """
-        fig, axs = plt.subplots(3, 4, figsize=(18, 10))
+        fig, axs = plt.subplots(4, 3, figsize=(18, 18))
         logs = self.iteration_logs
 
         idx_map = [
-            ("timesteps", 0, 0), ("fps", 0, 1), ("approx_kl", 0, 2), ("clip_fraction", 0, 3),
-            ("entropy_loss", 1, 0), ("explained_variance", 1, 1), ("learning_rate", 1, 2), ("loss", 1, 3),
-            ("policy_gradient_loss", 2, 0), ("value_loss", 2, 1)
+            ("timesteps", 0, 0), 
+            ("fps", 0, 1), 
+            ("approx_kl", 0, 2), 
+            ("clip_fraction", 1, 0),
+            ("entropy_loss", 1, 1), 
+            ("explained_variance", 1, 2), 
+            ("learning_rate", 2, 0), 
+            ("loss", 2, 1),
+            ("policy_gradient_loss", 2, 2), 
+            ("value_loss", 3, 0)
         ]
 
         # グラフを10種類描画
@@ -532,8 +539,8 @@ def run_training_and_inference(
     horse_name_col='馬名',
     single_odds_col='単勝',
     finishing_col='着順',
-    cost=100,
-    total_timesteps=200000,
+    cost=1,
+    total_timesteps=500000,
     races_per_episode=128
 ):
     """
@@ -589,7 +596,8 @@ def run_training_and_inference(
         env=vec_train_env,
         verbose=1,
         batch_size=256,
-        n_steps=2048
+        n_steps=2048,
+        learning_rate=1e-4,  # ここで学習率を指定
     )
 
     # 学習を実行
@@ -634,7 +642,7 @@ if __name__ == "__main__":
         horse_name_col='馬名',
         single_odds_col='単勝',
         finishing_col='着順',
-        cost=100,
+        cost=1,
         total_timesteps=200000,
         races_per_episode=128
     )
