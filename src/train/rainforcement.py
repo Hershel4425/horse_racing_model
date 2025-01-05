@@ -11,13 +11,12 @@ from gymnasium import spaces
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.callbacks import BaseCallback
 
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
-# ------------------------------------------------------------------------------------
-# パスや設定
-# ------------------------------------------------------------------------------------
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transormer予測モデル/{DATE_STRING}")
@@ -29,9 +28,7 @@ if not os.path.exists(pred_dir):
     os.makedirs(pred_dir)
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 
-# ------------------------------------------------------------------------------------
-# データ分割関数
-# ------------------------------------------------------------------------------------
+
 def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
     df = df.sort_values('date').reset_index(drop=True)
     race_ids = df[id_col].unique()
@@ -46,9 +43,7 @@ def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
     test_df = df[df[id_col].isin(test_ids)].copy()
     return train_df, valid_df, test_df
 
-# ------------------------------------------------------------------------------------
-# PCAやスケーリング
-# ------------------------------------------------------------------------------------
+
 def prepare_data(
     data_path,
     id_col='race_id',
@@ -155,16 +150,8 @@ def prepare_data(
         cat_cols, actual_num_dim
     )
 
-# ------------------------------------------------------------------------------------
-# 複数レースを1エピソードとして学習する環境 (Gymnasium形式)
-# ------------------------------------------------------------------------------------
+
 class MultiRaceEnv(gym.Env):
-    """
-    1エピソードを複数レース分にして学習効率を上げる環境例。
-    - reset()でランダムに複数レースをサンプリング
-    - step()を複数回行い、サンプリングしたレース群を順番に処理
-    - 報酬は「的中時の配当 - cost」を採用する
-    """
     metadata = {"render_modes": []}
 
     def __init__(
@@ -225,7 +212,6 @@ class MultiRaceEnv(gym.Env):
         return feats.flatten()
 
     def _select_races_for_episode(self):
-        # 5万レース中からランダムに self.races_per_episode 分だけ抽出して順序もシャッフル
         self.sampled_races = random.sample(self.race_ids, k=self.races_per_episode)
         random.shuffle(self.sampled_races)
 
@@ -270,16 +256,12 @@ class MultiRaceEnv(gym.Env):
             obs = self.current_obs
         return obs, float(reward), terminated, truncated, {}
 
-# ------------------------------------------------------------------------------------
-# 評価用 (Gymnasium形式)
-# ------------------------------------------------------------------------------------
+
 def evaluate_model(env: MultiRaceEnv, model):
     original_ids = env.race_ids
     cost_sum = 0.0
     profit_sum = 0.0
     results = []
-
-    # 全レースをランダムではなく順序で評価
     for rid in original_ids:
         subdf = env.race_map[rid].sort_values(env.horse_col).reset_index(drop=True)
         obs = env._get_obs_for_race(subdf)
@@ -310,9 +292,60 @@ def evaluate_model(env: MultiRaceEnv, model):
     roi = (profit_sum / cost_sum * 100) if cost_sum > 0 else 0.0
     return roi, pd.DataFrame(results)
 
-# ------------------------------------------------------------------------------------
-# 学習・推論
-# ------------------------------------------------------------------------------------
+
+class StatsCallback(BaseCallback):
+    def __init__(self):
+        super().__init__(verbose=0)
+        self.iteration_logs = {
+            "iteration": [],
+            "timesteps": [],
+            "time_elapsed": [],
+            "fps": [],
+            "approx_kl": [],
+            "clip_fraction": [],
+            "entropy_loss": [],
+            "explained_variance": [],
+            "learning_rate": [],
+            "loss": [],
+            "policy_gradient_loss": [],
+            "value_loss": []
+        }
+        self.iter_count = 0
+
+    def _on_rollout_end(self):
+        self.iter_count += 1
+        self.iteration_logs["iteration"].append(self.iter_count)
+        self.iteration_logs["timesteps"].append(self.model.num_timesteps)
+        self.iteration_logs["time_elapsed"].append(self.model.logger.name_to_value.get("time/total_timesteps", 0))
+        self.iteration_logs["fps"].append(self.model.logger.name_to_value.get("time/fps", 0))
+        self.iteration_logs["approx_kl"].append(self.model.logger.name_to_value.get("train/approx_kl", 0))
+        self.iteration_logs["clip_fraction"].append(self.model.logger.name_to_value.get("train/clip_fraction", 0))
+        self.iteration_logs["entropy_loss"].append(self.model.logger.name_to_value.get("train/entropy_loss", 0))
+        self.iteration_logs["explained_variance"].append(self.model.logger.name_to_value.get("train/explained_variance", 0))
+        self.iteration_logs["learning_rate"].append(self.model.logger.name_to_value.get("train/learning_rate", 0))
+        self.iteration_logs["loss"].append(self.model.logger.name_to_value.get("train/loss", 0))
+        self.iteration_logs["policy_gradient_loss"].append(self.model.logger.name_to_value.get("train/policy_gradient_loss", 0))
+        self.iteration_logs["value_loss"].append(self.model.logger.name_to_value.get("train/value_loss", 0))
+
+    def plot_logs(self):
+        fig, axs = plt.subplots(3, 4, figsize=(18, 10))
+        logs = self.iteration_logs
+        idx_map = [
+            ("timesteps", 0, 0), ("fps", 0, 1), ("approx_kl", 0, 2), ("clip_fraction", 0, 3),
+            ("entropy_loss", 1, 0), ("explained_variance", 1, 1), ("learning_rate", 1, 2), ("loss", 1, 3),
+            ("policy_gradient_loss", 2, 0), ("value_loss", 2, 1)
+        ]
+        for key, row, col in idx_map:
+            axs[row, col].plot(logs["iteration"], logs[key], marker='o', label=key)
+            axs[row, col].set_xlabel("iteration")
+            axs[row, col].set_ylabel(key)
+            axs[row, col].legend()
+        axs[2, 2].axis("off")
+        axs[2, 3].axis("off")
+        plt.tight_layout()
+        plt.show()
+
+
 def run_training_and_inference(
     data_path=DATA_PATH,
     id_col='race_id',
@@ -356,6 +389,7 @@ def run_training_and_inference(
         races_per_episode=races_per_episode
     )
     vec_train_env = DummyVecEnv([lambda: train_env])
+    stats_callback = StatsCallback()
     model = PPO(
         "MlpPolicy",
         env=vec_train_env,
@@ -363,16 +397,13 @@ def run_training_and_inference(
         batch_size=256,
         n_steps=2048
     )
-    # 学習
-    model.learn(total_timesteps=total_timesteps)
-    # 評価 (train)
+    model.learn(total_timesteps=total_timesteps, callback=stats_callback)
+
     train_roi, _ = evaluate_model(train_env, model)
     print(f"Train ROI: {train_roi:.2f}%")
-    # 評価 (valid)
     valid_roi, _ = evaluate_model(valid_env, model)
     print(f"Valid ROI: {valid_roi:.2f}%")
 
-    # テスト評価
     test_env = MultiRaceEnv(
         df=test_df,
         feature_dim=dim,
@@ -388,9 +419,9 @@ def run_training_and_inference(
     print(f"Test ROI: {test_roi:.2f}%")
     test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
 
-# ------------------------------------------------------------------------------------
-# メイン実行
-# ------------------------------------------------------------------------------------
+    stats_callback.plot_logs()
+
+
 if __name__ == "__main__":
     run_training_and_inference(
         data_path=DATA_PATH,
