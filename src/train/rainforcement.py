@@ -591,13 +591,22 @@ def run_training_and_inference(
 
     # PPOモデルを初期化。なぜPPOか？
     # -> シンプルで安定した強化学習アルゴリズムであり、ハイパーパラメータをある程度簡単に調整できる
+    ppo_hyperparams = {
+        "learning_rate": 1e-4,
+        "n_steps": 2048,
+        "batch_size": 256,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_range": 0.2,
+        "ent_coef": 0.01,
+        "n_epochs": 10,
+        # 必要に応じて vf_coef, max_grad_norm なども追加
+    }
     model = PPO(
         "MlpPolicy",
         env=vec_train_env,
         verbose=1,
-        batch_size=256,
-        n_steps=2048,
-        learning_rate=1e-4,  # ここで学習率を指定
+        **ppo_hyperparams
     )
 
     # 学習を実行
