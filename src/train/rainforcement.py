@@ -13,6 +13,7 @@ from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.utils import set_random_seed
 
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
@@ -578,13 +579,20 @@ def run_training_and_inference(
     finishing_col='着順',
     cost=100,
     total_timesteps=500000,
-    races_per_episode=128
+    races_per_episode=128,
+    seed_value=42
 ):
     """
     学習データの準備からモデルの学習、評価、予測結果の保存、ログの可視化までを一括で実行する関数。
     Why:
       - スクリプトを1回実行するだけで全ステップを行えるように設計し、再現性・再利用性を高める
     """
+    # seed固定
+    set_random_seed(seed_value)
+    random.seed(seed_value)
+    np.random.seed(seed_value)
+
+
     # データを読み込み＆前処理
     train_df, valid_df, test_df, _, _, _, _, dim = prepare_data(
         data_path=data_path,
