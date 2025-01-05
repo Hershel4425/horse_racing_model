@@ -2,6 +2,7 @@ import os
 import re
 import datetime
 import random
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -415,7 +416,7 @@ def evaluate_model(env: MultiRaceEnv, model):
     profit_sum = 0.0
     results = []
 
-    for rid in original_ids:
+    for rid in tqdm(original_ids):
         # レースごとのデータを取り出し、観測を作成してモデルに入力
         subdf = env.race_map[rid].sort_values(env.horse_col).reset_index(drop=True)
         obs = env._get_obs_for_race(subdf)
@@ -519,7 +520,7 @@ class StatsCallback(BaseCallback):
         # 残りのスペースはoffにしてレイアウトを整える
         axs[2, 2].axis("off")
         axs[2, 3].axis("off")
-        
+
         plt.tight_layout()
         plt.show()
 
