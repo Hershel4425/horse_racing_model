@@ -539,7 +539,7 @@ def run_training_and_inference(
     horse_name_col='馬名',
     single_odds_col='単勝',
     finishing_col='着順',
-    cost=1,
+    cost=0.01,
     total_timesteps=500000,
     races_per_episode=128
 ):
