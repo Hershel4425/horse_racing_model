@@ -455,11 +455,6 @@ def evaluate_model(env: MultiRaceEnv, model):
 
 
 class StatsCallback(BaseCallback):
-    """
-    学習過程のログを取り、その後に可視化するためのコールバック。
-    Why:
-      - PPOの訓練ステップごとの損失やKLなどを追跡して、学習が進んでいるかどうかを確認する
-    """
     def __init__(self):
         super().__init__(verbose=0)
         self.iteration_logs = {
@@ -478,12 +473,13 @@ class StatsCallback(BaseCallback):
         }
         self.iter_count = 0
 
+    # on_step (or _on_step) メソッドを実装しないと TypeError になる
+    # 新しめのバージョンでは先頭にアンダースコア (_on_step) がつく場合があります
+    def _on_step(self) -> bool:
+        # ここでは必要最低限の True を返すだけでOK
+        return True
+
     def _on_rollout_end(self):
-        """
-        学習の各ロールアウト終了時に呼ばれるコールバックメソッド。
-        Why:
-          - ロールアウト毎に進捗を記録しておき、後から可視化し学習の安定度などを分析できるようにする
-        """
         self.iter_count += 1
         self.iteration_logs["iteration"].append(self.iter_count)
         self.iteration_logs["timesteps"].append(self.model.num_timesteps)
@@ -519,11 +515,11 @@ class StatsCallback(BaseCallback):
             axs[row, col].set_xlabel("iteration")
             axs[row, col].set_ylabel(key)
             axs[row, col].legend()
-
+        
         # 残りのスペースはoffにしてレイアウトを整える
         axs[2, 2].axis("off")
         axs[2, 3].axis("off")
-
+        
         plt.tight_layout()
         plt.show()
 
