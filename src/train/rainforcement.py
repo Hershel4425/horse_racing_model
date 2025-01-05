@@ -379,7 +379,7 @@ class MultiRaceEnv(gym.Env):
             # 1着の場合はオッズ×賭け金 - コストを報酬として計算
             if row[self.finishing_col] == 1:
                 odds = row[self.single_odds_col]
-                reward = odds - self.cost
+                reward = odds / 100 - self.cost
             else:
                 # 外れた場合は賭け金を失う
                 reward = -self.cost
@@ -429,7 +429,7 @@ def evaluate_model(env: MultiRaceEnv, model):
             odds = row[env.single_odds_col]
             finishing = row[env.finishing_col]
             if finishing == 1:
-                profit_sum += odds * 100 - env.cost
+                profit_sum += odds / 100 - env.cost
             else:
                 profit_sum -= env.cost
         else:
@@ -450,8 +450,8 @@ def evaluate_model(env: MultiRaceEnv, model):
                 "selected_flag": selected_flag
             })
     
-    # ROI = (利益合計 / コスト合計) * 100
-    roi = (profit_sum / cost_sum * 100) if cost_sum > 0 else 0.0
+    # ROI = (利益合計 / コスト合計) * 10000
+    roi = (profit_sum / cost_sum * 10000) if cost_sum > 0 else 0.0
     return roi, pd.DataFrame(results)
 
 
@@ -525,8 +525,8 @@ class StatsCallback(BaseCallback):
             axs[row, col].legend()
         
         # 残りのスペースはoffにしてレイアウトを整える
-        axs[2, 2].axis("off")
-        axs[2, 3].axis("off")
+        axs[3, 1].axis("off")
+        axs[3, 2].axis("off")
 
         plt.tight_layout()
         plt.show()
@@ -592,9 +592,9 @@ def run_training_and_inference(
     # PPOモデルを初期化。なぜPPOか？
     # -> シンプルで安定した強化学習アルゴリズムであり、ハイパーパラメータをある程度簡単に調整できる
     ppo_hyperparams = {
-        "learning_rate": 1e-4,
-        "n_steps": 2048,
-        "batch_size": 256,
+        "learning_rate": 3e-4,
+        "n_steps": 4096,
+        "batch_size": 512,
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "clip_range": 0.2,
@@ -605,6 +605,7 @@ def run_training_and_inference(
     model = PPO(
         "MlpPolicy",
         env=vec_train_env,
+        # device="mps",  # ← ここで MPS を指定
         verbose=1,
         **ppo_hyperparams
     )
@@ -651,7 +652,7 @@ if __name__ == "__main__":
         horse_name_col='馬名',
         single_odds_col='単勝',
         finishing_col='着順',
-        cost=1,
+        cost=0.01, # 学習を安定させるため、costのスケールを減らす
         total_timesteps=200000,
         races_per_episode=128
     )
