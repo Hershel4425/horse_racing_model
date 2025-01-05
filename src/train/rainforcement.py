@@ -26,7 +26,7 @@ if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 
 # predictionを保存するパス
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/{DATE_STRING}.csv")
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/強化学習/{DATE_STRING}.csv")
 pred_dir = os.path.dirname(SAVE_PATH_PRED)
 if not os.path.exists(pred_dir):
     os.makedirs(pred_dir)
@@ -36,7 +36,7 @@ DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 #------------------------------------------------------------------------------------
 # データ分割用関数
 #------------------------------------------------------------------------------------
-def split_data(df, id_col="race_id", test_ratio=0.1, valid_ratio=0.1):
+def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
     """
     日付順にソートしてから、レースIDのリストをシャッフルなしで分割。
     デフォルトはtrain:0.8, valid:0.1, test:0.1のイメージ。
@@ -66,7 +66,9 @@ def prepare_data(
     valid_ratio=0.1,
     pca_dim_horse=50,
     pca_dim_jockey=50,
-    cat_cols=None
+    cat_cols=None,
+    finishing_col='着順',
+    single_odds_col='単勝'
 ):
     """
     データを読み込み、PCAやスケーリングなどの前処理を実施。
@@ -81,6 +83,7 @@ def prepare_data(
     # 不要列をリストアップ（リークを防ぐための削除候補）
     default_leakage_cols = [
         '斤量','タイム','着差','上がり3F','馬体重','人気',
+        # '単勝','着順', # 学習に用いるためここは削除しない
         'horse_id','jockey_id','trainer_id','順位点','入線','1着タイム差',
         '先位タイム差','5着着差','増減','1C通過順位','2C通過順位',
         '3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース',
@@ -91,9 +94,16 @@ def prepare_data(
         '3200m','3300m','3400m','3500m','3600m','horse_ability'
     ]
     drop_candidates = set(default_leakage_cols)
+    df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
     # 数値列・カテゴリ列を分ける
+    # 数値列を抽出 (ただし着順と単勝は学習に使わない -> 除外)
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if finishing_col in num_cols:
+        num_cols.remove(finishing_col)
+    if single_odds_col in num_cols:
+        num_cols.remove(single_odds_col)
+    # カテゴリ列
     cat_cols = [c for c in cat_cols if c in df.columns]
 
     # 数値列の欠損埋めを0で実施
@@ -357,31 +367,29 @@ def evaluate_model(env: SingleWinBetEnvVariableHorses, model, cost=100):
         sub = env.current_subdf
         if sub is not None and len(sub) > 0:
             race_id_value = sub.iloc[0][env.id_col]
-            if action < len(sub):
-                row_action = sub.iloc[action]
-                bet_horse_num = row_action[env.horse_col]
-                bet_horse_name = row_action[env.horse_name_col]
-                bet_finishing = row_action[env.finishing_col]
-                bet_single_odds = row_action[env.single_odds_col]
-                this_cost = cost
-            else:
-                bet_horse_num = -1
-                bet_horse_name = "INVALID"
-                bet_finishing = -1
-                bet_single_odds = 0.0
-                this_cost = 0
 
-            results.append({
-                "race_id": race_id_value,
-                "馬番": bet_horse_num,
-                "馬名": bet_horse_name,
-                "着順": bet_finishing,
-                "単勝": bet_single_odds,
-                "モデルによる掛け金": this_cost
-            })
-            
-            total_reward += reward
-            total_cost += this_cost
+            # action が有効範囲かどうか判定
+            valid_action = (0 <= action < len(sub))
+
+            for i in range(len(sub)):
+                row_i = sub.iloc[i]
+                selected_flag = (i == action and valid_action)
+                
+                # 選択された馬のみ cost を計上し、それ以外の馬は cost=0
+                this_cost = cost if selected_flag else 0
+                total_cost += this_cost
+                
+                results.append({
+                    "race_id": race_id_value,
+                    "馬番": row_i[env.horse_col],
+                    "馬名": row_i[env.horse_name_col],
+                    "着順": row_i[env.finishing_col],
+                    "単勝": row_i[env.single_odds_col],
+                    "selected_flag": selected_flag
+                })
+
+            if reward != 999: # 単勝データが存在しないデータが999になっているため
+                total_reward += reward
 
         if env.current_race_idx >= len(env.race_dfs):
             # 全レースが終了
@@ -408,6 +416,7 @@ def run_training_and_inference(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
+    batch_size = 256,
     n_epochs=10
 ):
     """
@@ -452,13 +461,15 @@ def run_training_and_inference(
         cost=cost
     )
 
-    # (4) ここでは SB3 の PPO を使う例を示すが、Gymnasium互換で実行するには
-    #     gymnasium -> gym へのラッパが必要になる場合がある点に注意。
-    #     ここでは単に DummyVecEnv を使っているが、通常SB3は旧GymAPIを想定している。
+    # (4) ここでは SB3 の PPO を使う例を示す
     vec_train_env = DummyVecEnv([lambda: train_env])
 
     # PPOモデルを作成
-    model = PPO("MlpPolicy", vec_train_env, verbose=0)
+    model = PPO(
+            policy="MlpPolicy", 
+            env=vec_train_env, 
+            batch_size = batch_size,
+            verbose=1)
 
     # (5) 簡易的な学習ループ (n_epochs 回繰り返し)
     train_rois, valid_rois = [], []
