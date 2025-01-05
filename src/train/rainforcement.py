@@ -80,7 +80,6 @@ def prepare_data(
     valid_ratio=0.1,
     pca_dim_horse=50,
     pca_dim_jockey=50,
-    cat_cols=None,
     finishing_col='着順',
     single_odds_col='単勝'
 ):
@@ -92,9 +91,6 @@ def prepare_data(
       - PCAによる次元圧縮で特徴量をコンパクトにまとめ、高次元のデータでも学習を安定させやすくする
       - 標準化を行うことで、モデルが扱いやすいスケールにデータを合わせる（大きい値の特徴量が学習を支配しないようにする）
     """
-    if cat_cols is None:
-        cat_cols = []
-    
     # CSVデータを読み込む
     df = pd.read_csv(data_path, encoding="utf_8_sig")
     
@@ -113,6 +109,8 @@ def prepare_data(
     
     # 数値カラムをリストアップ
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    # カテゴリからむ
+    cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
     
     # 目的変数（着順）やオッズの列はnum_colsから外しておき、別途取り扱いたい
     if finishing_col in num_cols:
@@ -120,13 +118,13 @@ def prepare_data(
     if single_odds_col in num_cols:
         num_cols.remove(single_odds_col)
     
-    # カテゴリ列が指定されていても、実際に存在しない列は排除する
-    cat_cols = [c for c in cat_cols if c in df.columns]
-    
     # 数値カラムの欠損を0で補完
     # Why: 強化学習やPCAでNaNがあるとエラーになることが多い。シンプルに0埋めで対応
     for c in num_cols:
         df[c] = df[c].fillna(0)
+    # カテゴリカラムの欠損値はmissingで補完
+    for c in cat_cols:
+        df[c] = df[c].fillna("missing").astype(str)
     
     # データをsplitしてtrain/valid/testに分割
     train_df, valid_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio, valid_ratio=valid_ratio)
@@ -212,10 +210,20 @@ def prepare_data(
         other_valid = np.zeros((len(valid_df), 0))
         other_test = np.zeros((len(test_df), 0))
     
-    # カテゴリ特徴量はそのまま扱う（one-hotエンコードなどをしていない点に注意）
-    cat_features_train = train_df[cat_cols].values if cat_cols else np.zeros((len(train_df), 0))
-    cat_features_valid = valid_df[cat_cols].values if cat_cols else np.zeros((len(valid_df), 0))
-    cat_features_test = test_df[cat_cols].values if cat_cols else np.zeros((len(test_df), 0))
+    # カテゴリ特徴量をエンコード
+    for c in cat_cols:
+        train_df[c] = train_df[c].astype('category')
+        valid_df[c] = valid_df[c].astype('category')
+        test_df[c] = test_df[c].astype('category')
+        train_cat = train_df[c].cat.categories
+        valid_df[c] = pd.Categorical(valid_df[c], categories=train_cat)
+        test_df[c] = pd.Categorical(test_df[c], categories=train_cat)
+        train_df[c] = train_df[c].cat.codes
+        valid_df[c] = valid_df[c].cat.codes
+        test_df[c] = test_df[c].cat.codes
+    cat_features_train = train_df[cat_cols].values
+    cat_features_valid = valid_df[cat_cols].values
+    cat_features_test = test_df[cat_cols].values
     
     # 馬関連、騎手関連、その他数値、カテゴリのベクトルを結合して最終的な特徴量とする
     # Why: 異なるブロックに分割し、それらを最終的に一つの入力ベクトルにまとめることで、
@@ -305,7 +313,7 @@ class MultiRaceEnv(gym.Env):
         # なぜ MultiDiscrete にするのか？
         #  -> 各馬番に対して「掛けない(0)〜複数単位賭ける(n)」を同時に表現するため。
         #     例えば [4]*self.max_horses とすれば 0〜3 の4パターンの賭け方が取れる。
-        max_bet = 3  # 例として、「1馬に対して最大3単位賭けられる」とする
+        max_bet = 5  # 例として、「1馬に対して最大3単位賭けられる」とする
         self.action_space = spaces.MultiDiscrete([max_bet + 1] * self.max_horses)
 
 
@@ -396,7 +404,7 @@ class MultiRaceEnv(gym.Env):
                 if row[self.finishing_col] == 1:
                     # 勝った馬(1着)ならオッズ分の払い戻しを受ける
                     odds = row[self.single_odds_col]
-                    reward += cost_i * (odds / 100)
+                    reward += cost_i * odds
 
 
         # 次のレースへ
@@ -455,7 +463,7 @@ def evaluate_model(env: MultiRaceEnv, model):
 
                 # 着順が1位であればオッズ×bet_amount の払い戻し
                 if finishing == 1:
-                    race_profit += bet_amount * (odds / 100)
+                    race_profit += bet_amount * odds
 
         # 総利益 = 払い戻し - 掛け金
         net_race_profit = race_profit - race_cost
@@ -568,7 +576,7 @@ def run_training_and_inference(
     horse_name_col='馬名',
     single_odds_col='単勝',
     finishing_col='着順',
-    cost=0.01,
+    cost=100,
     total_timesteps=500000,
     races_per_episode=128
 ):
@@ -584,8 +592,6 @@ def run_training_and_inference(
         test_ratio=0.1,
         valid_ratio=0.1,
         pca_dim_horse=50,
-        pca_dim_jockey=50,
-        cat_cols=[]
     )
 
     # 強化学習環境をtrain, valid用に作成
@@ -681,7 +687,7 @@ if __name__ == "__main__":
         horse_name_col='馬名',
         single_odds_col='単勝',
         finishing_col='着順',
-        cost=0.01, # 学習を安定させるため、costのスケールを減らす
+        cost=100, 
         total_timesteps=200000,
         races_per_episode=128
     )
