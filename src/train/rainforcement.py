@@ -1,5 +1,4 @@
 import os
-import re
 import datetime
 import random
 from tqdm import tqdm
@@ -79,8 +78,7 @@ def prepare_data(
     id_col='race_id',
     test_ratio=0.1,
     valid_ratio=0.1,
-    pca_dim_horse=50,
-    pca_dim_jockey=50,
+    n_components=20,
     finishing_col='着順',
     single_odds_col='単勝'
 ):
@@ -130,86 +128,24 @@ def prepare_data(
     # データをsplitしてtrain/valid/testに分割
     train_df, valid_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio, valid_ratio=valid_ratio)
     
-    # PCA対象を馬関連と騎手関連に振り分けるための正規表現パターン
-    # Why: 馬と騎手で特徴のまとまりを分けることで、異なる視点(馬性能・騎手性能)を圧縮しやすい
-    pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
-    pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
-    
-    # 馬関連と騎手関連の数値列を抽出
-    pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
-    pca_jockey_target_cols = [c for c in num_cols if re.match(pca_pattern_jockey, c)]
-    
-    # それ以外の数値列
-    other_num_cols = [
-        c for c in num_cols
-        if c not in pca_horse_target_cols
-        and c not in pca_jockey_target_cols
-    ]
-    
-    # 以下、馬関連・騎手関連・その他数値列に分けて標準化→PCA処理
-    scaler_horse = StandardScaler()
-    if len(pca_horse_target_cols) > 0:
-        # 馬関連の特徴量を学習データでfitし、バリデーションとテストはtransformのみ
-        horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
-        horse_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols])
-        horse_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols])
-    else:
-        # 馬関連の特徴量がない場合は、形だけ0行列を用意
-        horse_train_scaled = np.zeros((len(train_df), 0))
-        horse_valid_scaled = np.zeros((len(valid_df), 0))
-        horse_test_scaled = np.zeros((len(test_df), 0))
-    
-    # 次元数指定が、実際の特徴量数を超えていないかチェック
-    # Why: PCAは実際の特徴量数以上にコンポーネントを取れない
-    pca_dim_horse = min(pca_dim_horse, horse_train_scaled.shape[1]) if horse_train_scaled.shape[1] > 0 else 0
-    
-    # PCAによる馬関連次元圧縮
-    # Why: 馬の傾向を圧縮して特徴をまとめることで、学習の高速化＆高次元での過学習リスクを低減
-    if pca_dim_horse > 0:
-        pca_model_horse = PCA(n_components=pca_dim_horse)
-        horse_train_pca = pca_model_horse.fit_transform(horse_train_scaled)
-        horse_valid_pca = pca_model_horse.transform(horse_valid_scaled)
-        horse_test_pca = pca_model_horse.transform(horse_test_scaled)
-    else:
-        pca_model_horse = None
-        horse_train_pca = horse_train_scaled
-        horse_valid_pca = horse_valid_scaled
-        horse_test_pca = horse_test_scaled
-    
-    # 騎手関連も同様
-    scaler_jockey = StandardScaler()
-    if len(pca_jockey_target_cols) > 0:
-        jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
-        jockey_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols])
-        jockey_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols])
-    else:
-        jockey_train_scaled = np.zeros((len(train_df), 0))
-        jockey_valid_scaled = np.zeros((len(valid_df), 0))
-        jockey_test_scaled = np.zeros((len(test_df), 0))
-    
-    pca_dim_jockey = min(pca_dim_jockey, jockey_train_scaled.shape[1]) if jockey_train_scaled.shape[1] > 0 else 0
-    
-    if pca_dim_jockey > 0:
-        pca_model_jockey = PCA(n_components=pca_dim_jockey)
-        jockey_train_pca = pca_model_jockey.fit_transform(jockey_train_scaled)
-        jockey_valid_pca = pca_model_jockey.transform(jockey_valid_scaled)
-        jockey_test_pca = pca_model_jockey.transform(jockey_test_scaled)
-    else:
-        pca_model_jockey = None
-        jockey_train_pca = jockey_train_scaled
-        jockey_valid_pca = jockey_valid_scaled
-        jockey_test_pca = jockey_test_scaled
-    
-    # その他の数値列も標準化のみを行う
-    scaler_other = StandardScaler()
-    if len(other_num_cols) > 0:
-        other_train = scaler_other.fit_transform(train_df[other_num_cols])
-        other_valid = scaler_other.transform(valid_df[other_num_cols])
-        other_test = scaler_other.transform(test_df[other_num_cols])
-    else:
-        other_train = np.zeros((len(train_df), 0))
-        other_valid = np.zeros((len(valid_df), 0))
-        other_test = np.zeros((len(test_df), 0))
+    scaler = StandardScaler()
+    # fitはtrainのみ
+    X_train_num = scaler.fit_transform(train_df[num_cols])
+    X_valid_num = scaler.transform(valid_df[num_cols])
+    X_test_num  = scaler.transform(test_df[num_cols])
+    pca = PCA(n_components=n_components)
+    pca_train = pca.fit_transform(X_train_num)
+    pca_valid = pca.transform(X_valid_num)
+    pca_test  = pca.transform(X_test_num)
+
+    # 各主成分の説明率・合計説明率を表示
+    explained_ratios = pca.explained_variance_ratio_
+    total_explained = explained_ratios.sum()
+
+    print("◆ PCA 各主成分の分散説明率")
+    for i, ratio in enumerate(explained_ratios, start=1):
+        print(f"  第{i}主成分: {ratio:.2%}")
+    print(f"  => 合計説明率（上位 {len(explained_ratios)} 成分）: {total_explained:.2%}")
     
     # カテゴリ特徴量をエンコード
     for c in cat_cols:
@@ -222,16 +158,16 @@ def prepare_data(
         train_df[c] = train_df[c].cat.codes
         valid_df[c] = valid_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
-    cat_features_train = train_df[cat_cols].values
-    cat_features_valid = valid_df[cat_cols].values
-    cat_features_test = test_df[cat_cols].values
+    cat_train = train_df[cat_cols].values
+    cat_valid = valid_df[cat_cols].values
+    cat_test = test_df[cat_cols].values
     
     # 馬関連、騎手関連、その他数値、カテゴリのベクトルを結合して最終的な特徴量とする
     # Why: 異なるブロックに分割し、それらを最終的に一つの入力ベクトルにまとめることで、
     #      各要素が欠損していてもコードが煩雑にならずにすむ
-    X_train = np.concatenate([cat_features_train, other_train, horse_train_pca, jockey_train_pca], axis=1)
-    X_valid = np.concatenate([cat_features_valid, other_valid, horse_valid_pca, jockey_valid_pca], axis=1)
-    X_test = np.concatenate([cat_features_test, other_test, horse_test_pca, jockey_test_pca], axis=1)
+    X_train = np.concatenate([pca_train, cat_train], axis=1)
+    X_valid = np.concatenate([pca_valid, cat_valid], axis=1)
+    X_test  = np.concatenate([pca_test,  cat_test],  axis=1)
     
     # それぞれのDataFrameに特徴量ベクトルを格納
     train_df["X"] = list(X_train)
@@ -243,7 +179,7 @@ def prepare_data(
     
     return (
         train_df, valid_df, test_df,
-        (scaler_horse, pca_model_horse), (scaler_jockey, pca_model_jockey), scaler_other,
+        scaler, pca, 
         cat_cols, actual_num_dim
     )
 
@@ -267,7 +203,7 @@ class MultiRaceEnv(gym.Env):
         finishing_col="着順",
         cost=100,
         races_per_episode=128,
-        initial_capital=10000,  # <-- 追加: 初期所持金
+        initial_capital=1000,  # <-- 追加: 初期所持金
         bet_mode="single",            # ← 追加: "single" or "multi"
         max_bet_units=5               # ← 追加: 複数馬の場合の最大ベット単位
     ):
@@ -500,41 +436,63 @@ def evaluate_model(env: MultiRaceEnv, model):
         race_cost = 0.0
         race_profit = 0.0
 
-        # 報酬計算を模擬（step関数を呼ばずに、ここでそのまま計算する）
-        for i in range(env.max_horses):
-            bet_units = action[i]
-            bet_amount = bet_units * env.cost  # 実際に掛けた金額
-            race_cost += bet_amount
+        if env.bet_mode == "single":
+            # 単勝1点賭けモード
+            chosen_horse_idx = action  # actionは整数一つ
+            # コスト
+            race_cost = env.cost
 
-            if i < n_horses:
-                row_i = subdf.iloc[i]
-                finishing = row_i[env.finishing_col]
-                odds = row_i[env.single_odds_col]
-
-                # 着順が1位であればオッズ×bet_amount の払い戻し
+            # 出走頭数内なら払い戻し計算
+            if chosen_horse_idx < n_horses:
+                row = subdf.iloc[chosen_horse_idx]
+                finishing = row[env.finishing_col]
+                odds = row[env.single_odds_col]
                 if finishing == 1:
-                    race_profit += bet_amount * odds
+                    race_profit = race_cost * odds
 
-        # 総払い戻しと総コスト
-        profit_sum += race_profit
+            # 結果保存
+            for i in range(n_horses):
+                bet_amount = env.cost if i == chosen_horse_idx else 0
+                row_i = subdf.iloc[i]
+                results.append({
+                    "race_id": rid,
+                    "馬番": row_i[env.horse_col],
+                    "馬名": row_i[env.horse_name_col],
+                    "着順": row_i[env.finishing_col],
+                    "単勝": row_i[env.single_odds_col],
+                    "bet_amount": bet_amount
+                })
+
+        else:
+            # 複数馬・複数単位賭けモード
+            # actionは長さ self.max_horses のベクトル
+            for i in range(env.max_horses):
+                bet_units = action[i]
+                bet_amount = bet_units * env.cost
+                race_cost += bet_amount
+
+                # 出走頭数内だけ払い戻し計算
+                if i < n_horses:
+                    row_i = subdf.iloc[i]
+                    finishing = row_i[env.finishing_col]
+                    odds = row_i[env.single_odds_col]
+                    if finishing == 1:
+                        race_profit += bet_amount * odds
+
+                # 結果保存
+                if i < n_horses:
+                    row_i = subdf.iloc[i]
+                    results.append({
+                        "race_id": rid,
+                        "馬番": row_i[env.horse_col],
+                        "馬名": row_i[env.horse_name_col],
+                        "着順": row_i[env.finishing_col],
+                        "単勝": row_i[env.single_odds_col],
+                        "bet_amount": bet_amount
+                    })
+
         cost_sum += race_cost
-
-        # どの馬を選択したかを記録
-        # 結果保存 (各馬ごとに "bet_amount" として入れる)
-        for i in range(n_horses):
-            row_i = subdf.iloc[i]
-            bet_units = action[i]
-            bet_amount = bet_units * env.cost
-
-            results.append({
-                "race_id": rid,
-                "馬番": row_i[env.horse_col],
-                "馬名": row_i[env.horse_name_col],
-                "着順": row_i[env.finishing_col],
-                "単勝": row_i[env.single_odds_col],
-                # 修正前は selected_flag だったが、今は bet_amount を保存
-                "bet_amount": bet_amount
-            })
+        profit_sum += race_profit
     
     # ROI = (払い戻し合計 / コスト合計)
     roi = (profit_sum / cost_sum) if cost_sum > 0 else 0.0
@@ -626,7 +584,7 @@ def run_training_and_inference(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
-    total_timesteps=500000,
+    total_timesteps=200000,
     races_per_episode=32,
     seed_value=42
 ):
@@ -642,12 +600,12 @@ def run_training_and_inference(
 
 
     # データを読み込み＆前処理
-    train_df, valid_df, test_df, _, _, _, _, dim = prepare_data(
+    train_df, valid_df, test_df, _, _, _, dim = prepare_data(
         data_path=data_path,
         id_col=id_col,
         test_ratio=0.1,
         valid_ratio=0.1,
-        pca_dim_horse=50,
+        n_components=30,
     )
 
     # 強化学習環境をtrain, valid用に作成
