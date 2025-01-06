@@ -31,7 +31,7 @@ if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/{DATE_STRING}.csv")
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer/{DATE_STRING}.csv")
 SAVE_PATH_MODEL = os.path.join(MODEL_SAVE_DIR, "model")
 SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse")
 SAVE_PATH_PCA_MODEL_JOCKEY = os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey")
