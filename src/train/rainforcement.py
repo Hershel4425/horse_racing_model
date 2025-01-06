@@ -266,7 +266,10 @@ class MultiRaceEnv(gym.Env):
         single_odds_col="単勝",
         finishing_col="着順",
         cost=100,
-        races_per_episode=128
+        races_per_episode=128,
+        initial_capital=10000,  # <-- 追加: 初期所持金
+        bet_mode="single",            # ← 追加: "single" or "multi"
+        max_bet_units=5               # ← 追加: 複数馬の場合の最大ベット単位
     ):
         """
         Why:
@@ -286,36 +289,49 @@ class MultiRaceEnv(gym.Env):
         self.cost = cost
         self.feature_dim = feature_dim
         self.races_per_episode = races_per_episode
+        self.initial_capital = initial_capital
+        # 追加パラメータ
+        self.bet_mode = bet_mode
+        self.max_bet_units = max_bet_units
 
         # race_idをキーに、それぞれのレースのデータを保持する
         self.race_ids = df[id_col].unique().tolist()
         self.race_map = {}
 
-        max_horses = 0
+        self.max_horses = 0
         # 全レースのうち最大の出走頭数を探し、観測空間を一律の長さ(最大頭数)に揃える
         # Why: Gymの観測空間は固定長が望ましいため、足りない分はパディングする設計とする
         for rid in self.race_ids:
             subdf = df[df[id_col] == rid].copy().sort_values(self.horse_col)
-            max_horses = max(max_horses, len(subdf))
+            self.max_horses = max(self.max_horses, len(subdf))
             self.race_map[rid] = subdf
-        self.max_horses = max_horses
 
         # 観測空間を定義。馬最大頭数×特徴量次元
         # Why: 「何頭出走でも強制的に配列を同じ次元にして扱う」設計
+        # 馬特徴ベクトル (max_horses * feature_dim) + 所持金 (1次元) = 総合計
+        obs_dim = self.max_horses * self.feature_dim + 1
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_horses * self.feature_dim,),
+            shape=(obs_dim,),
             dtype=np.float32
         )
         
         # 行動空間: 
-        # 修正後（複数馬・変動掛け金）
+        # bet_modeに応じて行動空間を切り替える
+        if self.bet_mode == "single":
+            # 単勝1点 = 「どの馬に賭けるか」だけを離散で選択
+            # action は 0〜(max_horses-1)
+            self.action_space = spaces.Discrete(self.max_horses)
+        # （複数馬・変動掛け金）
+        else:
         # なぜ MultiDiscrete にするのか？
         #  -> 各馬番に対して「掛けない(0)〜複数単位賭ける(n)」を同時に表現するため。
         #     例えば [4]*self.max_horses とすれば 0〜3 の4パターンの賭け方が取れる。
-        max_bet = 5  # 例として、「1馬に対して最大3単位賭けられる」とする
-        self.action_space = spaces.MultiDiscrete([max_bet + 1] * self.max_horses)
+            # action は長さ self.max_horses のベクトル
+            self.action_space = spaces.MultiDiscrete(
+                [self.max_bet_units + 1] * self.max_horses
+            )
 
 
         # エピソード内でのレース順序をシャッフルするためのリストや状態を初期化
@@ -323,6 +339,9 @@ class MultiRaceEnv(gym.Env):
         self.current_race_idx = 0
         self.current_obs = None
         self.terminated = False
+
+        # 追加：所持金
+        self.capital = self.initial_capital
 
     def _get_obs_for_race(self, race_df: pd.DataFrame):
         """
@@ -344,8 +363,13 @@ class MultiRaceEnv(gym.Env):
             pad = np.zeros((pad_len, self.feature_dim), dtype=np.float32)
             feats = np.vstack([feats, pad])
         
-        # flattenして返す
-        return feats.flatten()
+        # flatten
+        feats = feats.flatten()
+
+        # 所持金を最後に付与 (float32でキャストして連結)
+        feats_with_capital = np.concatenate([feats, [self.capital]], axis=0)
+
+        return feats_with_capital
 
     def _select_races_for_episode(self):
         """
@@ -368,6 +392,9 @@ class MultiRaceEnv(gym.Env):
         self.current_race_idx = 0
         self.terminated = False
 
+        # 所持金を初期化
+        self.capital = self.initial_capital
+
         # 最初のレースの観測を返す
         race_df = self.race_map[self.sampled_races[self.current_race_idx]]
         self.current_obs = self._get_obs_for_race(race_df)
@@ -389,30 +416,52 @@ class MultiRaceEnv(gym.Env):
 
         # action は長さ self.max_horses のベクトル（各要素が0〜max_bet）。
         # 例: action = [2, 0, 3, 1, 0, ...] -> 馬1に2単位、馬3に3単位、馬4に1単位のように賭ける。
-        reward = 0.0
+        total_cost = 0.0
+        total_return = 0.0
 
-        # 各馬に対して賭け金を処理
-        for i in range(self.max_horses):
-            bet_units = action[i]  # i番目の馬への「何単位賭けるか」
-            cost_i = bet_units * self.cost  # その馬への実コスト (例: 1単位=100円相当、など)
+        if self.bet_mode == "single":
+            # 単勝1点モードの場合、action は「賭ける馬のindex (0〜max_horses-1)」
+            chosen_horse_idx = action
+            # コスト (1単位だけ賭ける想定であれば)
+            total_cost = self.cost
 
-            # まず賭けた分だけ支出(マイナス)とする
-            reward -= cost_i
-
-            # 出走馬数(n_horses)より i が小さければ実在する馬なので、勝利判定
-            if i < n_horses:
-                row = race_df.iloc[i]
+            if chosen_horse_idx < n_horses:
+                row = race_df.iloc[chosen_horse_idx]
                 if row[self.finishing_col] == 1:
-                    # 勝った馬(1着)ならオッズ分の払い戻しを受ける
                     odds = row[self.single_odds_col]
-                    reward += cost_i * odds
+                    total_return = total_cost * odds
+        else:
+            # 各馬に対して賭け金を処理
+            for i in range(self.max_horses):
+                bet_units = action[i]  # i番目の馬への「何単位賭けるか」
+                cost_i = bet_units * self.cost  # その馬への実コスト (例: 1単位=100円相当、など)
+                total_cost += cost_i
 
+
+                # 出走馬数(n_horses)より i が小さければ実在する馬なので、勝利判定
+                if i < n_horses:
+                    row = race_df.iloc[i]
+                    if row[self.finishing_col] == 1:
+                        # 勝った馬(1着)ならオッズ分の払い戻しを受ける
+                        odds = row[self.single_odds_col]
+                        total_return += cost_i * odds
+
+        # 報酬を (払い戻し - コスト) としてそのまま付与
+        reward = total_return - total_cost
+
+        # 所持金を更新
+        self.capital += reward
 
         # 次のレースへ
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
-        truncated = False
+
+        # 所持金が尽きたら強制終了
+        if self.capital <= 0:
+            terminated = True
+
         self.terminated = terminated
+        truncated = False
 
         if not terminated:
             # 次のレースの観測を生成
@@ -466,9 +515,8 @@ def evaluate_model(env: MultiRaceEnv, model):
                 if finishing == 1:
                     race_profit += bet_amount * odds
 
-        # 総利益 = 払い戻し - 掛け金
-        net_race_profit = race_profit - race_cost
-        profit_sum += net_race_profit
+        # 総払い戻しと総コスト
+        profit_sum += race_profit
         cost_sum += race_cost
 
         # どの馬を選択したかを記録
@@ -488,7 +536,7 @@ def evaluate_model(env: MultiRaceEnv, model):
                 "bet_amount": bet_amount
             })
     
-    # ROI = (利益合計 / コスト合計)
+    # ROI = (払い戻し合計 / コスト合計)
     roi = (profit_sum / cost_sum) if cost_sum > 0 else 0.0
     return roi, pd.DataFrame(results)
 
@@ -579,7 +627,7 @@ def run_training_and_inference(
     finishing_col='着順',
     cost=100,
     total_timesteps=500000,
-    races_per_episode=128,
+    races_per_episode=32,
     seed_value=42
 ):
     """
@@ -612,7 +660,8 @@ def run_training_and_inference(
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode
+        races_per_episode=races_per_episode,
+        bet_mode="single"
     )
     valid_env = MultiRaceEnv(
         df=valid_df,
@@ -623,7 +672,8 @@ def run_training_and_inference(
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode
+        races_per_episode=races_per_episode,
+        bet_mode="single"
     )
 
     # VecEnvに変換（PPOなど多くのRLアルゴリズムは並列環境を前提にしているため）
@@ -636,13 +686,16 @@ def run_training_and_inference(
     # -> シンプルで安定した強化学習アルゴリズムであり、ハイパーパラメータをある程度簡単に調整できる
     ppo_hyperparams = {
         "learning_rate": 1e-4,
-        "n_steps": 1024,
+        "n_steps": 2048,
         "batch_size": 256,
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "clip_range": 0.2,
         "ent_coef": 0.01,
         "n_epochs": 10,
+        "policy_kwargs": dict(
+            net_arch=[256, 256, 128],  # 例として3層
+        )
         # 必要に応じて vf_coef, max_grad_norm なども追加
     }
     model = PPO(
@@ -658,11 +711,11 @@ def run_training_and_inference(
 
     # 学習データでのROI確認
     train_roi, _ = evaluate_model(train_env, model)
-    print(f"Train ROI: {train_roi:.2f}%")
+    print(f"Train ROI: {train_roi*100:.2f}%")
 
     # バリデーションデータでのROI確認
     valid_roi, _ = evaluate_model(valid_env, model)
-    print(f"Valid ROI: {valid_roi:.2f}%")
+    print(f"Valid ROI: {valid_roi*100:.2f}%")
 
     # テストデータで最終評価
     test_env = MultiRaceEnv(
@@ -674,10 +727,11 @@ def run_training_and_inference(
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode
+        races_per_episode=races_per_episode,
+        bet_mode="single"
     )
     test_roi, test_df_out = evaluate_model(test_env, model)
-    print(f"Test ROI: {test_roi:.2f}%")
+    print(f"Test ROI: {test_roi*100:.2f}%")
 
     # 推論結果の保存
     test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
@@ -688,14 +742,4 @@ def run_training_and_inference(
 
 if __name__ == "__main__":
     # スクリプトを直接実行したときにトレーニングから推論までを実行
-    run_training_and_inference(
-        data_path=DATA_PATH,
-        id_col='race_id',
-        horse_col='馬番',
-        horse_name_col='馬名',
-        single_odds_col='単勝',
-        finishing_col='着順',
-        cost=100, 
-        total_timesteps=200000,
-        races_per_episode=128
-    )
+    run_training_and_inference()
