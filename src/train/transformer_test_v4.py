@@ -453,7 +453,7 @@ def run_train_time_split(
     id_col="race_id",
     batch_size=256,
     lr=0.001,
-    num_epochs=10,
+    num_epochs=50,
     pca_dim_horse=50,
     pca_dim_jockey=50,
     test_ratio=0.2,
@@ -463,11 +463,11 @@ def run_train_time_split(
     num_layers=6,
     dropout=0.15,
     weight_decay=1e-5,
-    patience=5,
+    patience=10,
     # 今回のポイント: 複数の時系列Splitをさらに作ってモデルを増やす
     # 例として train-valid を time split し、その区間をずらしながら複数のモデルを作る想定
-    # ここでは2回に分割する例
-    n_splits=2
+    # ここでは5回に分割する例
+    n_splits=5
 ):
     """
     時系列を使った再分割 → 学習 → 各モデルの精度を計測 → 精度に応じて重み付け → 推論平均

@@ -13,7 +13,7 @@ rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio'
 # ファイルパス設定
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")  # 特徴量CSVのパス
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/20241227204324.csv") 
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250106192049.csv") 
 
 def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED):
     # CSV読み込み

@@ -605,7 +605,7 @@ def run_training_and_inference(
         id_col=id_col,
         test_ratio=0.1,
         valid_ratio=0.1,
-        n_components=30,
+        n_components=100,
     )
 
     # 強化学習環境をtrain, valid用に作成
