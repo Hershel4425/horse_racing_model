@@ -156,7 +156,7 @@ class MultiRaceEnv(gym.Env):
         cost=100,
         races_per_episode=16,
         initial_capital=3000,  # <-- 追加: 初期所持金
-        bet_mode="single",            # ← 追加: "single" or "multi"
+        bet_mode="multi",            # ← 追加: "single" or "multi"
         max_bet_units=5               # ← 追加: 複数馬の場合の最大ベット単位
     ):
         """
@@ -539,7 +539,9 @@ def run_training_and_inference(
     cost=100,
     total_timesteps=200000,
     races_per_episode=32,
-    seed_value=42
+    seed_value=42,
+    bet_mode = "multi",
+    max_bet_units=5    
 ):
     """
     学習データの準備からモデルの学習、評価、予測結果の保存、ログの可視化までを一括で実行する関数。
@@ -571,7 +573,8 @@ def run_training_and_inference(
         finishing_col=finishing_col,
         cost=cost,
         races_per_episode=races_per_episode,
-        bet_mode="single"
+        bet_mode=bet_mode,
+        max_bet_units = max_bet_units
     )
     valid_env = MultiRaceEnv(
         df=valid_df,
@@ -583,7 +586,8 @@ def run_training_and_inference(
         finishing_col=finishing_col,
         cost=cost,
         races_per_episode=races_per_episode,
-        bet_mode="single"
+        bet_mode=bet_mode,
+        max_bet_units=max_bet_units
     )
 
     # VecEnvに変換（PPOなど多くのRLアルゴリズムは並列環境を前提にしているため）
@@ -635,7 +639,8 @@ def run_training_and_inference(
         finishing_col=finishing_col,
         cost=cost,
         races_per_episode=races_per_episode,
-        bet_mode="single"
+        bet_mode=bet_mode,
+        max_bet_units=max_bet_units
     )
     test_roi, test_df_out = evaluate_model(test_env, model)
     print(f"Test ROI: {test_roi*100:.2f}%")
