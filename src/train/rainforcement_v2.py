@@ -88,7 +88,7 @@ def prepare_data(
     """
     # CSVデータを読み込む
     df1 = pd.read_csv(feature_path, encoding='utf-8-sig') # race_id, 馬番, 馬名, 単勝, 着順, 各種特徴量
-    df2 = pd.read_csv(data_path, encoding='utf-8-sig') # race_id, 馬番, transformer予測値
+    df2 = pd.read_csv(data_path, encoding='utf-8-sig') # race_id, 馬番, transformerを用いた予測値
 
     # マージ
     df = pd.merge(
@@ -155,7 +155,8 @@ class MultiRaceEnv(gym.Env):
         finishing_col="着順",
         cost=100,
         races_per_episode=16,
-        initial_capital=3000,  # <-- 追加: 初期所持金
+        initial_capital=5000,  # <-- 追加: 初期所持金
+        max_total_bet_cost: float = 1000.0,  # <-- 追加: 1レースあたりのベット上限額
         bet_mode="multi",            # ← 追加: "single" or "multi"
         max_bet_units=5               # ← 追加: 複数馬の場合の最大ベット単位
     ):
@@ -181,6 +182,7 @@ class MultiRaceEnv(gym.Env):
         # 追加パラメータ
         self.bet_mode = bet_mode
         self.max_bet_units = max_bet_units
+        self.max_total_bet_cost = max_total_bet_cost
 
         # race_idをキーに、それぞれのレースのデータを保持する
         self.race_ids = df[id_col].unique().tolist()
@@ -304,41 +306,61 @@ class MultiRaceEnv(gym.Env):
 
         # action は長さ self.max_horses のベクトル（各要素が0〜max_bet）。
         # 例: action = [2, 0, 3, 1, 0, ...] -> 馬1に2単位、馬3に3単位、馬4に1単位のように賭ける。
-        total_cost = 0.0
-        total_return = 0.0
+        # まず賭け金を算出
+        race_cost = 0.0
+        race_profit = 0.0
 
         if self.bet_mode == "single":
             # 単勝1点モードの場合、action は「賭ける馬のindex (0〜max_horses-1)」
             chosen_horse_idx = action
             # コスト (1単位だけ賭ける想定であれば)
-            total_cost = self.cost
+            race_cost = self.cost
+
+            # 実際に賭けた分を所持金から差し引く
+            self.capital -= race_cost
 
             if chosen_horse_idx < n_horses:
                 row = race_df.iloc[chosen_horse_idx]
                 if row[self.finishing_col] == 1:
                     odds = row[self.single_odds_col]
-                    total_return = total_cost * odds
+                    race_profit = race_cost * odds
         else:
             # 各馬に対して賭け金を処理
             for i in range(self.max_horses):
                 bet_units = action[i]  # i番目の馬への「何単位賭けるか」
                 cost_i = bet_units * self.cost  # その馬への実コスト (例: 1単位=100円相当、など)
-                total_cost += cost_i
+                # 所持金が足りなければ賭け金を0にするなど
+                if self.capital < (race_cost + cost_i):
+                    cost_i = 0
+                race_cost += cost_i
 
 
-                # 出走馬数(n_horses)より i が小さければ実在する馬なので、勝利判定
-                if i < n_horses:
+            # 合計賭け金が上限を超えたらペナルティ etc.
+            if race_cost > self.max_total_bet_cost:
+                penalty = (race_cost - self.max_total_bet_cost) * 5
+                # この時点でペナルティを reward に加えておく (別管理でもOK)
+                race_cost += penalty
+                # もしくは total_cost を max_total_bet_cost で打ち切るなどの処理
+
+            # 実際に賭けた分を所持金から差し引く
+            self.capital -= race_cost
+
+            # その後に払い戻し計算
+            # 勝ち馬への払い戻し
+            for i in range(self.max_horses):
+                bet_units = action[i]
+                cost_i = bet_units * self.cost
+                # 上記と同様にcapitalチェックや無効化があった場合は cost_iが変わる(管理要注意)
+                if i < len(race_df) and cost_i > 0:
                     row = race_df.iloc[i]
                     if row[self.finishing_col] == 1:
-                        # 勝った馬(1着)ならオッズ分の払い戻しを受ける
-                        odds = row[self.single_odds_col]
-                        total_return += cost_i * odds
+                        race_profit += cost_i * row[self.single_odds_col]
 
-        # 報酬を (払い戻し - コスト) としてそのまま付与
-        reward = total_return - total_cost
+        # 払い戻しを所持金に加える
+        self.capital += race_profit
 
-        # 所持金を更新
-        self.capital += reward
+        # 報酬: 「今回の純増分」をベースにするなら
+        reward = (race_profit - race_cost)
 
         # 次のレースへ
         self.current_race_idx += 1

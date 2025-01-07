@@ -1,4 +1,5 @@
 import os
+import re
 import datetime
 import random
 from tqdm import tqdm
@@ -78,7 +79,8 @@ def prepare_data(
     id_col='race_id',
     test_ratio=0.1,
     valid_ratio=0.1,
-    n_components=20,
+    pca_dim_horse=50,
+    pca_dim_jockey=50,
     finishing_col='着順',
     single_odds_col='単勝'
 ):
@@ -128,24 +130,86 @@ def prepare_data(
     # データをsplitしてtrain/valid/testに分割
     train_df, valid_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio, valid_ratio=valid_ratio)
     
-    scaler = StandardScaler()
-    # fitはtrainのみ
-    X_train_num = scaler.fit_transform(train_df[num_cols])
-    X_valid_num = scaler.transform(valid_df[num_cols])
-    X_test_num  = scaler.transform(test_df[num_cols])
-    pca = PCA(n_components=n_components)
-    pca_train = pca.fit_transform(X_train_num)
-    pca_valid = pca.transform(X_valid_num)
-    pca_test  = pca.transform(X_test_num)
-
-    # 各主成分の説明率・合計説明率を表示
-    explained_ratios = pca.explained_variance_ratio_
-    total_explained = explained_ratios.sum()
-
-    print("◆ PCA 各主成分の分散説明率")
-    for i, ratio in enumerate(explained_ratios, start=1):
-        print(f"  第{i}主成分: {ratio:.2%}")
-    print(f"  => 合計説明率（上位 {len(explained_ratios)} 成分）: {total_explained:.2%}")
+    # PCA対象を馬関連と騎手関連に振り分けるための正規表現パターン
+    # Why: 馬と騎手で特徴のまとまりを分けることで、異なる視点(馬性能・騎手性能)を圧縮しやすい
+    pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
+    pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
+    
+    # 馬関連と騎手関連の数値列を抽出
+    pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
+    pca_jockey_target_cols = [c for c in num_cols if re.match(pca_pattern_jockey, c)]
+    
+    # それ以外の数値列
+    other_num_cols = [
+        c for c in num_cols
+        if c not in pca_horse_target_cols
+        and c not in pca_jockey_target_cols
+    ]
+    
+    # 以下、馬関連・騎手関連・その他数値列に分けて標準化→PCA処理
+    scaler_horse = StandardScaler()
+    if len(pca_horse_target_cols) > 0:
+        # 馬関連の特徴量を学習データでfitし、バリデーションとテストはtransformのみ
+        horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
+        horse_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols])
+        horse_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols])
+    else:
+        # 馬関連の特徴量がない場合は、形だけ0行列を用意
+        horse_train_scaled = np.zeros((len(train_df), 0))
+        horse_valid_scaled = np.zeros((len(valid_df), 0))
+        horse_test_scaled = np.zeros((len(test_df), 0))
+    
+    # 次元数指定が、実際の特徴量数を超えていないかチェック
+    # Why: PCAは実際の特徴量数以上にコンポーネントを取れない
+    pca_dim_horse = min(pca_dim_horse, horse_train_scaled.shape[1]) if horse_train_scaled.shape[1] > 0 else 0
+    
+    # PCAによる馬関連次元圧縮
+    # Why: 馬の傾向を圧縮して特徴をまとめることで、学習の高速化＆高次元での過学習リスクを低減
+    if pca_dim_horse > 0:
+        pca_model_horse = PCA(n_components=pca_dim_horse)
+        horse_train_pca = pca_model_horse.fit_transform(horse_train_scaled)
+        horse_valid_pca = pca_model_horse.transform(horse_valid_scaled)
+        horse_test_pca = pca_model_horse.transform(horse_test_scaled)
+    else:
+        pca_model_horse = None
+        horse_train_pca = horse_train_scaled
+        horse_valid_pca = horse_valid_scaled
+        horse_test_pca = horse_test_scaled
+    
+    # 騎手関連も同様
+    scaler_jockey = StandardScaler()
+    if len(pca_jockey_target_cols) > 0:
+        jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
+        jockey_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols])
+        jockey_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols])
+    else:
+        jockey_train_scaled = np.zeros((len(train_df), 0))
+        jockey_valid_scaled = np.zeros((len(valid_df), 0))
+        jockey_test_scaled = np.zeros((len(test_df), 0))
+    
+    pca_dim_jockey = min(pca_dim_jockey, jockey_train_scaled.shape[1]) if jockey_train_scaled.shape[1] > 0 else 0
+    
+    if pca_dim_jockey > 0:
+        pca_model_jockey = PCA(n_components=pca_dim_jockey)
+        jockey_train_pca = pca_model_jockey.fit_transform(jockey_train_scaled)
+        jockey_valid_pca = pca_model_jockey.transform(jockey_valid_scaled)
+        jockey_test_pca = pca_model_jockey.transform(jockey_test_scaled)
+    else:
+        pca_model_jockey = None
+        jockey_train_pca = jockey_train_scaled
+        jockey_valid_pca = jockey_valid_scaled
+        jockey_test_pca = jockey_test_scaled
+    
+    # その他の数値列も標準化のみを行う
+    scaler_other = StandardScaler()
+    if len(other_num_cols) > 0:
+        other_train = scaler_other.fit_transform(train_df[other_num_cols])
+        other_valid = scaler_other.transform(valid_df[other_num_cols])
+        other_test = scaler_other.transform(test_df[other_num_cols])
+    else:
+        other_train = np.zeros((len(train_df), 0))
+        other_valid = np.zeros((len(valid_df), 0))
+        other_test = np.zeros((len(test_df), 0))
     
     # カテゴリ特徴量をエンコード
     for c in cat_cols:
@@ -158,16 +222,16 @@ def prepare_data(
         train_df[c] = train_df[c].cat.codes
         valid_df[c] = valid_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
-    cat_train = train_df[cat_cols].values
-    cat_valid = valid_df[cat_cols].values
-    cat_test = test_df[cat_cols].values
+    cat_features_train = train_df[cat_cols].values
+    cat_features_valid = valid_df[cat_cols].values
+    cat_features_test = test_df[cat_cols].values
     
     # 馬関連、騎手関連、その他数値、カテゴリのベクトルを結合して最終的な特徴量とする
     # Why: 異なるブロックに分割し、それらを最終的に一つの入力ベクトルにまとめることで、
     #      各要素が欠損していてもコードが煩雑にならずにすむ
-    X_train = np.concatenate([pca_train, cat_train], axis=1)
-    X_valid = np.concatenate([pca_valid, cat_valid], axis=1)
-    X_test  = np.concatenate([pca_test,  cat_test],  axis=1)
+    X_train = np.concatenate([cat_features_train, other_train, horse_train_pca, jockey_train_pca], axis=1)
+    X_valid = np.concatenate([cat_features_valid, other_valid, horse_valid_pca, jockey_valid_pca], axis=1)
+    X_test = np.concatenate([cat_features_test, other_test, horse_test_pca, jockey_test_pca], axis=1)
     
     # それぞれのDataFrameに特徴量ベクトルを格納
     train_df["X"] = list(X_train)
@@ -179,7 +243,7 @@ def prepare_data(
     
     return (
         train_df, valid_df, test_df,
-        scaler, pca, 
+        (scaler_horse, pca_model_horse), (scaler_jockey, pca_model_jockey), scaler_other,
         cat_cols, actual_num_dim
     )
 
@@ -202,10 +266,7 @@ class MultiRaceEnv(gym.Env):
         single_odds_col="単勝",
         finishing_col="着順",
         cost=100,
-        races_per_episode=128,
-        initial_capital=1000,  # <-- 追加: 初期所持金
-        bet_mode="single",            # ← 追加: "single" or "multi"
-        max_bet_units=5               # ← 追加: 複数馬の場合の最大ベット単位
+        races_per_episode=128
     ):
         """
         Why:
@@ -225,49 +286,36 @@ class MultiRaceEnv(gym.Env):
         self.cost = cost
         self.feature_dim = feature_dim
         self.races_per_episode = races_per_episode
-        self.initial_capital = initial_capital
-        # 追加パラメータ
-        self.bet_mode = bet_mode
-        self.max_bet_units = max_bet_units
 
         # race_idをキーに、それぞれのレースのデータを保持する
         self.race_ids = df[id_col].unique().tolist()
         self.race_map = {}
 
-        self.max_horses = 0
+        max_horses = 0
         # 全レースのうち最大の出走頭数を探し、観測空間を一律の長さ(最大頭数)に揃える
         # Why: Gymの観測空間は固定長が望ましいため、足りない分はパディングする設計とする
         for rid in self.race_ids:
             subdf = df[df[id_col] == rid].copy().sort_values(self.horse_col)
-            self.max_horses = max(self.max_horses, len(subdf))
+            max_horses = max(max_horses, len(subdf))
             self.race_map[rid] = subdf
+        self.max_horses = max_horses
 
         # 観測空間を定義。馬最大頭数×特徴量次元
         # Why: 「何頭出走でも強制的に配列を同じ次元にして扱う」設計
-        # 馬特徴ベクトル (max_horses * feature_dim) + 所持金 (1次元) = 総合計
-        obs_dim = self.max_horses * self.feature_dim + 1
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(obs_dim,),
+            shape=(self.max_horses * self.feature_dim,),
             dtype=np.float32
         )
         
         # 行動空間: 
-        # bet_modeに応じて行動空間を切り替える
-        if self.bet_mode == "single":
-            # 単勝1点 = 「どの馬に賭けるか」だけを離散で選択
-            # action は 0〜(max_horses-1)
-            self.action_space = spaces.Discrete(self.max_horses)
-        # （複数馬・変動掛け金）
-        else:
+        # 修正後（複数馬・変動掛け金）
         # なぜ MultiDiscrete にするのか？
         #  -> 各馬番に対して「掛けない(0)〜複数単位賭ける(n)」を同時に表現するため。
         #     例えば [4]*self.max_horses とすれば 0〜3 の4パターンの賭け方が取れる。
-            # action は長さ self.max_horses のベクトル
-            self.action_space = spaces.MultiDiscrete(
-                [self.max_bet_units + 1] * self.max_horses
-            )
+        max_bet = 5  # 例として、「1馬に対して最大3単位賭けられる」とする
+        self.action_space = spaces.MultiDiscrete([max_bet + 1] * self.max_horses)
 
 
         # エピソード内でのレース順序をシャッフルするためのリストや状態を初期化
@@ -275,9 +323,6 @@ class MultiRaceEnv(gym.Env):
         self.current_race_idx = 0
         self.current_obs = None
         self.terminated = False
-
-        # 追加：所持金
-        self.capital = self.initial_capital
 
     def _get_obs_for_race(self, race_df: pd.DataFrame):
         """
@@ -299,13 +344,8 @@ class MultiRaceEnv(gym.Env):
             pad = np.zeros((pad_len, self.feature_dim), dtype=np.float32)
             feats = np.vstack([feats, pad])
         
-        # flatten
-        feats = feats.flatten()
-
-        # 所持金を最後に付与 (float32でキャストして連結)
-        feats_with_capital = np.concatenate([feats, [self.capital]], axis=0)
-
-        return feats_with_capital
+        # flattenして返す
+        return feats.flatten()
 
     def _select_races_for_episode(self):
         """
@@ -328,9 +368,6 @@ class MultiRaceEnv(gym.Env):
         self.current_race_idx = 0
         self.terminated = False
 
-        # 所持金を初期化
-        self.capital = self.initial_capital
-
         # 最初のレースの観測を返す
         race_df = self.race_map[self.sampled_races[self.current_race_idx]]
         self.current_obs = self._get_obs_for_race(race_df)
@@ -352,52 +389,30 @@ class MultiRaceEnv(gym.Env):
 
         # action は長さ self.max_horses のベクトル（各要素が0〜max_bet）。
         # 例: action = [2, 0, 3, 1, 0, ...] -> 馬1に2単位、馬3に3単位、馬4に1単位のように賭ける。
-        total_cost = 0.0
-        total_return = 0.0
+        reward = 0.0
 
-        if self.bet_mode == "single":
-            # 単勝1点モードの場合、action は「賭ける馬のindex (0〜max_horses-1)」
-            chosen_horse_idx = action
-            # コスト (1単位だけ賭ける想定であれば)
-            total_cost = self.cost
+        # 各馬に対して賭け金を処理
+        for i in range(self.max_horses):
+            bet_units = action[i]  # i番目の馬への「何単位賭けるか」
+            cost_i = bet_units * self.cost  # その馬への実コスト (例: 1単位=100円相当、など)
 
-            if chosen_horse_idx < n_horses:
-                row = race_df.iloc[chosen_horse_idx]
+            # まず賭けた分だけ支出(マイナス)とする
+            reward -= cost_i
+
+            # 出走馬数(n_horses)より i が小さければ実在する馬なので、勝利判定
+            if i < n_horses:
+                row = race_df.iloc[i]
                 if row[self.finishing_col] == 1:
+                    # 勝った馬(1着)ならオッズ分の払い戻しを受ける
                     odds = row[self.single_odds_col]
-                    total_return = total_cost * odds
-        else:
-            # 各馬に対して賭け金を処理
-            for i in range(self.max_horses):
-                bet_units = action[i]  # i番目の馬への「何単位賭けるか」
-                cost_i = bet_units * self.cost  # その馬への実コスト (例: 1単位=100円相当、など)
-                total_cost += cost_i
+                    reward += cost_i * odds
 
-
-                # 出走馬数(n_horses)より i が小さければ実在する馬なので、勝利判定
-                if i < n_horses:
-                    row = race_df.iloc[i]
-                    if row[self.finishing_col] == 1:
-                        # 勝った馬(1着)ならオッズ分の払い戻しを受ける
-                        odds = row[self.single_odds_col]
-                        total_return += cost_i * odds
-
-        # 報酬を (払い戻し - コスト) としてそのまま付与
-        reward = total_return - total_cost
-
-        # 所持金を更新
-        self.capital += reward
 
         # 次のレースへ
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
-
-        # 所持金が尽きたら強制終了
-        if self.capital <= 0:
-            terminated = True
-
-        self.terminated = terminated
         truncated = False
+        self.terminated = terminated
 
         if not terminated:
             # 次のレースの観測を生成
@@ -436,65 +451,44 @@ def evaluate_model(env: MultiRaceEnv, model):
         race_cost = 0.0
         race_profit = 0.0
 
-        if env.bet_mode == "single":
-            # 単勝1点賭けモード
-            chosen_horse_idx = action  # actionは整数一つ
-            # コスト
-            race_cost = env.cost
+        # 報酬計算を模擬（step関数を呼ばずに、ここでそのまま計算する）
+        for i in range(env.max_horses):
+            bet_units = action[i]
+            bet_amount = bet_units * env.cost  # 実際に掛けた金額
+            race_cost += bet_amount
 
-            # 出走頭数内なら払い戻し計算
-            if chosen_horse_idx < n_horses:
-                row = subdf.iloc[chosen_horse_idx]
-                finishing = row[env.finishing_col]
-                odds = row[env.single_odds_col]
-                if finishing == 1:
-                    race_profit = race_cost * odds
-
-            # 結果保存
-            for i in range(n_horses):
-                bet_amount = env.cost if i == chosen_horse_idx else 0
+            if i < n_horses:
                 row_i = subdf.iloc[i]
-                results.append({
-                    "race_id": rid,
-                    "馬番": row_i[env.horse_col],
-                    "馬名": row_i[env.horse_name_col],
-                    "着順": row_i[env.finishing_col],
-                    "単勝": row_i[env.single_odds_col],
-                    "bet_amount": bet_amount
-                })
+                finishing = row_i[env.finishing_col]
+                odds = row_i[env.single_odds_col]
 
-        else:
-            # 複数馬・複数単位賭けモード
-            # actionは長さ self.max_horses のベクトル
-            for i in range(env.max_horses):
-                bet_units = action[i]
-                bet_amount = bet_units * env.cost
-                race_cost += bet_amount
+                # 着順が1位であればオッズ×bet_amount の払い戻し
+                if finishing == 1:
+                    race_profit += bet_amount * odds
 
-                # 出走頭数内だけ払い戻し計算
-                if i < n_horses:
-                    row_i = subdf.iloc[i]
-                    finishing = row_i[env.finishing_col]
-                    odds = row_i[env.single_odds_col]
-                    if finishing == 1:
-                        race_profit += bet_amount * odds
-
-                # 結果保存
-                if i < n_horses:
-                    row_i = subdf.iloc[i]
-                    results.append({
-                        "race_id": rid,
-                        "馬番": row_i[env.horse_col],
-                        "馬名": row_i[env.horse_name_col],
-                        "着順": row_i[env.finishing_col],
-                        "単勝": row_i[env.single_odds_col],
-                        "bet_amount": bet_amount
-                    })
-
+        # 総利益 = 払い戻し - 掛け金
+        net_race_profit = race_profit - race_cost
+        profit_sum += net_race_profit
         cost_sum += race_cost
-        profit_sum += race_profit
+
+        # どの馬を選択したかを記録
+        # 結果保存 (各馬ごとに "bet_amount" として入れる)
+        for i in range(n_horses):
+            row_i = subdf.iloc[i]
+            bet_units = action[i]
+            bet_amount = bet_units * env.cost
+
+            results.append({
+                "race_id": rid,
+                "馬番": row_i[env.horse_col],
+                "馬名": row_i[env.horse_name_col],
+                "着順": row_i[env.finishing_col],
+                "単勝": row_i[env.single_odds_col],
+                # 修正前は selected_flag だったが、今は bet_amount を保存
+                "bet_amount": bet_amount
+            })
     
-    # ROI = (払い戻し合計 / コスト合計)
+    # ROI = (利益合計 / コスト合計)
     roi = (profit_sum / cost_sum) if cost_sum > 0 else 0.0
     return roi, pd.DataFrame(results)
 
@@ -584,8 +578,8 @@ def run_training_and_inference(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
-    total_timesteps=200000,
-    races_per_episode=32,
+    total_timesteps=500000,
+    races_per_episode=128,
     seed_value=42
 ):
     """
@@ -600,12 +594,12 @@ def run_training_and_inference(
 
 
     # データを読み込み＆前処理
-    train_df, valid_df, test_df, _, _, _, dim = prepare_data(
+    train_df, valid_df, test_df, _, _, _, _, dim = prepare_data(
         data_path=data_path,
         id_col=id_col,
         test_ratio=0.1,
         valid_ratio=0.1,
-        n_components=100,
+        pca_dim_horse=50,
     )
 
     # 強化学習環境をtrain, valid用に作成
@@ -618,8 +612,7 @@ def run_training_and_inference(
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode,
-        bet_mode="single"
+        races_per_episode=races_per_episode
     )
     valid_env = MultiRaceEnv(
         df=valid_df,
@@ -630,8 +623,7 @@ def run_training_and_inference(
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode,
-        bet_mode="single"
+        races_per_episode=races_per_episode
     )
 
     # VecEnvに変換（PPOなど多くのRLアルゴリズムは並列環境を前提にしているため）
@@ -644,16 +636,13 @@ def run_training_and_inference(
     # -> シンプルで安定した強化学習アルゴリズムであり、ハイパーパラメータをある程度簡単に調整できる
     ppo_hyperparams = {
         "learning_rate": 1e-4,
-        "n_steps": 2048,
+        "n_steps": 1024,
         "batch_size": 256,
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "clip_range": 0.2,
         "ent_coef": 0.01,
         "n_epochs": 10,
-        "policy_kwargs": dict(
-            net_arch=[256, 256, 128],  # 例として3層
-        )
         # 必要に応じて vf_coef, max_grad_norm なども追加
     }
     model = PPO(
@@ -669,11 +658,11 @@ def run_training_and_inference(
 
     # 学習データでのROI確認
     train_roi, _ = evaluate_model(train_env, model)
-    print(f"Train ROI: {train_roi*100:.2f}%")
+    print(f"Train ROI: {train_roi:.2f}%")
 
     # バリデーションデータでのROI確認
     valid_roi, _ = evaluate_model(valid_env, model)
-    print(f"Valid ROI: {valid_roi*100:.2f}%")
+    print(f"Valid ROI: {valid_roi:.2f}%")
 
     # テストデータで最終評価
     test_env = MultiRaceEnv(
@@ -685,11 +674,10 @@ def run_training_and_inference(
         single_odds_col=single_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode,
-        bet_mode="single"
+        races_per_episode=races_per_episode
     )
     test_roi, test_df_out = evaluate_model(test_env, model)
-    print(f"Test ROI: {test_roi*100:.2f}%")
+    print(f"Test ROI: {test_roi:.2f}%")
 
     # 推論結果の保存
     test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
@@ -700,4 +688,14 @@ def run_training_and_inference(
 
 if __name__ == "__main__":
     # スクリプトを直接実行したときにトレーニングから推論までを実行
-    run_training_and_inference()
+    run_training_and_inference(
+        data_path=DATA_PATH,
+        id_col='race_id',
+        horse_col='馬番',
+        horse_name_col='馬名',
+        single_odds_col='単勝',
+        finishing_col='着順',
+        cost=100, 
+        total_timesteps=200000,
+        races_per_episode=128
+    )
