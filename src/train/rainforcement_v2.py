@@ -1,4 +1,5 @@
 import os
+import re
 import datetime
 import random
 from tqdm import tqdm
@@ -13,6 +14,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import set_random_seed
+
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 import matplotlib.pyplot as plt
 
@@ -77,6 +81,11 @@ def prepare_data(
     feature_path,
     test_ratio=0.1,
     valid_ratio=0.1,
+    id_col="race_id",
+    single_odds_col="単勝",
+    finishing_col="着順",
+    pca_dim_horse=50,
+    pca_dim_jockey=50
 ):
     """
     データの読み込み、リークを起こす可能性のある列の削除、数値列の欠損補完、
@@ -86,11 +95,8 @@ def prepare_data(
       - PCAによる次元圧縮で特徴量をコンパクトにまとめ、高次元のデータでも学習を安定させやすくする
       - 標準化を行うことで、モデルが扱いやすいスケールにデータを合わせる（大きい値の特徴量が学習を支配しないようにする）
     """
-    # CSVデータを読み込む
-    df1 = pd.read_csv(feature_path, encoding='utf-8-sig') # race_id, 馬番, 馬名, 単勝, 着順, 各種特徴量
-    df2 = pd.read_csv(data_path, encoding='utf-8-sig') # race_id, 馬番, transformerを用いた予測値
-
-    # マージ
+    df1 = pd.read_csv(feature_path, encoding='utf-8-sig')
+    df2 = pd.read_csv(data_path, encoding='utf-8-sig')
     df = pd.merge(
         df1,
         df2[["race_id", "馬番", "P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5"]],
@@ -98,42 +104,131 @@ def prepare_data(
         how="inner"
     )
 
-    # 無駄な列や直接リークになる列を削除するならここで対応
-    # 今回は最低限の列だけ残す（馬名, 単勝, 着順, date, 各P_系）
-    # 必要に応じて他の列をdrop
-    keep_cols = [
-        "race_id", "馬番", "馬名", "単勝", "着順", "date",
-        "P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5"
+    default_leakage_cols = [
+        '斤量','タイム','着差','上がり3F','馬体重','人気','horse_id','jockey_id','trainer_id','順位点',
+        '入線','1着タイム差','先位タイム差','5着着差','増減','1C通過順位','2C通過順位','3C通過順位',
+        '4C通過順位','賞金','前半ペース','後半ペース','ペース','上がり3F順位','100m','200m','300m',
+        '400m','500m','600m','700m','800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
+        '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m','2400m','2500m','2600m',
+        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m','horse_ability'
     ]
-    df = df[keep_cols].copy()
+    df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
-    # 欠損埋め
-    prob_cols = ["P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5"]
-    for c in prob_cols:
-        df[c] = df[c].fillna(0.0)
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+    if finishing_col in num_cols:
+        num_cols.remove(finishing_col)
+    if single_odds_col in num_cols:
+        num_cols.remove(single_odds_col)
 
-    # train/valid/testに分割
-    train_df, valid_df, test_df = split_data(df, id_col="race_id", test_ratio=test_ratio, valid_ratio=valid_ratio)
+    for c in num_cols:
+        df[c] = df[c].fillna(0)
+    for c in cat_cols:
+        df[c] = df[c].fillna("missing").astype(str)
 
-    # 特徴量は P_top1, P_top3, P_top5, P_pop1, P_pop3, P_pop5 のみ
-    # X は 6次元
-    def assign_features(dataframe):
-        x_list = []
-        for idx, row in dataframe.iterrows():
-            x_list.append([
-                row["P_top1"], row["P_top3"], row["P_top5"],
-                row["P_pop1"], row["P_pop3"], row["P_pop5"]
-            ])
-        return x_list
+    train_df, valid_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio, valid_ratio=valid_ratio)
 
-    
-    # それぞれのDataFrameに特徴量ベクトルを格納
-    train_df["X"] = assign_features(train_df)
-    valid_df["X"] = assign_features(valid_df)
-    test_df["X"] = assign_features(test_df)
-    
-    # 特徴量次元6
-    dim = 6
+    pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
+    pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
+
+    pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
+    pca_jockey_target_cols = [c for c in num_cols if re.match(pca_pattern_jockey, c)]
+    other_num_cols = [
+        c for c in num_cols
+        if c not in pca_horse_target_cols
+        and c not in pca_jockey_target_cols
+    ]
+
+    scaler_horse = StandardScaler()
+    if len(pca_horse_target_cols) > 0:
+        horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
+        horse_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols])
+        horse_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols])
+    else:
+        horse_train_scaled = np.zeros((len(train_df), 0))
+        horse_valid_scaled = np.zeros((len(valid_df), 0))
+        horse_test_scaled = np.zeros((len(test_df), 0))
+
+    pca_dim_horse = min(pca_dim_horse, horse_train_scaled.shape[1]) if horse_train_scaled.shape[1] > 0 else 0
+    if pca_dim_horse > 0:
+        pca_model_horse = PCA(n_components=pca_dim_horse)
+        horse_train_pca = pca_model_horse.fit_transform(horse_train_scaled)
+        horse_valid_pca = pca_model_horse.transform(horse_valid_scaled)
+        horse_test_pca = pca_model_horse.transform(horse_test_scaled)
+    else:
+        horse_train_pca = horse_train_scaled
+        horse_valid_pca = horse_valid_scaled
+        horse_test_pca = horse_test_scaled
+
+    scaler_jockey = StandardScaler()
+    if len(pca_jockey_target_cols) > 0:
+        jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
+        jockey_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols])
+        jockey_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols])
+    else:
+        jockey_train_scaled = np.zeros((len(train_df), 0))
+        jockey_valid_scaled = np.zeros((len(valid_df), 0))
+        jockey_test_scaled = np.zeros((len(test_df), 0))
+
+    pca_dim_jockey = min(pca_dim_jockey, jockey_train_scaled.shape[1]) if jockey_train_scaled.shape[1] > 0 else 0
+    if pca_dim_jockey > 0:
+        pca_model_jockey = PCA(n_components=pca_dim_jockey)
+        jockey_train_pca = pca_model_jockey.fit_transform(jockey_train_scaled)
+        jockey_valid_pca = pca_model_jockey.transform(jockey_valid_scaled)
+        jockey_test_pca = pca_model_jockey.transform(jockey_test_scaled)
+    else:
+        jockey_train_pca = jockey_train_scaled
+        jockey_valid_pca = jockey_valid_scaled
+        jockey_test_pca = jockey_test_scaled
+
+    scaler_other = StandardScaler()
+    if len(other_num_cols) > 0:
+        other_train = scaler_other.fit_transform(train_df[other_num_cols])
+        other_valid = scaler_other.transform(valid_df[other_num_cols])
+        other_test = scaler_other.transform(test_df[other_num_cols])
+    else:
+        other_train = np.zeros((len(train_df), 0))
+        other_valid = np.zeros((len(valid_df), 0))
+        other_test = np.zeros((len(test_df), 0))
+
+    for c in cat_cols:
+        train_df[c] = train_df[c].astype('category')
+        valid_df[c] = valid_df[c].astype('category')
+        test_df[c] = test_df[c].astype('category')
+        train_cat = train_df[c].cat.categories
+        valid_df[c] = pd.Categorical(valid_df[c], categories=train_cat)
+        test_df[c] = pd.Categorical(test_df[c], categories=train_cat)
+        train_df[c] = train_df[c].cat.codes
+        valid_df[c] = valid_df[c].cat.codes
+        test_df[c] = test_df[c].cat.codes
+
+    cat_features_train = train_df[cat_cols].values
+    cat_features_valid = valid_df[cat_cols].values
+    cat_features_test = test_df[cat_cols].values
+
+    X_train_num = np.concatenate([other_train, horse_train_pca, jockey_train_pca], axis=1)
+    X_valid_num = np.concatenate([other_valid, horse_valid_pca, jockey_valid_pca], axis=1)
+    X_test_num = np.concatenate([other_test, horse_test_pca, jockey_test_pca], axis=1)
+
+    X_train = np.concatenate([cat_features_train, X_train_num], axis=1)
+    X_valid = np.concatenate([cat_features_valid, X_valid_num], axis=1)
+    X_test = np.concatenate([cat_features_test, X_test_num], axis=1)
+
+    # 追加で P_××× の特徴量をそれぞれに結合
+    p_cols = ["P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5"]
+    p_train = train_df[p_cols].fillna(0.0).values
+    p_valid = valid_df[p_cols].fillna(0.0).values
+    p_test = test_df[p_cols].fillna(0.0).values
+
+    X_train = np.concatenate([X_train, p_train], axis=1)
+    X_valid = np.concatenate([X_valid, p_valid], axis=1)
+    X_test = np.concatenate([X_test, p_test], axis=1)
+
+    train_df["X"] = list(X_train)
+    valid_df["X"] = list(X_valid)
+    test_df["X"] = list(X_test)
+
+    dim = X_train.shape[1]
     return train_df, valid_df, test_df, dim
 
 class MultiRaceEnv(gym.Env):
@@ -562,7 +657,7 @@ def run_training_and_inference(
     total_timesteps=200000,
     races_per_episode=32,
     seed_value=42,
-    bet_mode = "multi",
+    bet_mode = "single",
     max_bet_units=5    
 ):
     """
@@ -580,8 +675,13 @@ def run_training_and_inference(
     train_df, valid_df, test_df, dim = prepare_data(
         data_path=data_path,
         feature_path=feature_path,
+        id_col="race_id",
         test_ratio=0.1,
         valid_ratio=0.1,
+        single_odds_col="単勝",
+        finishing_col="着順",
+        pca_dim_horse=50,
+        pca_dim_jockey=50
     )
 
     # 強化学習環境をtrain, valid用に作成
@@ -630,6 +730,9 @@ def run_training_and_inference(
         "ent_coef": 0.01,
         "n_epochs": 10,
         # 必要に応じて vf_coef, max_grad_norm なども追加
+        "policy_kwargs": dict(
+            net_arch=[256, 256, 128, 128],  # 例として4層
+        )
     }
     model = PPO(
         "MlpPolicy",
