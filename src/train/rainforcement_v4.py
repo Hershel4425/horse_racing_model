@@ -37,7 +37,7 @@ if not os.path.exists(pred_dir):
 DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250106194932.csv")
 FEATURE_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 
-def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
+def split_data(df, id_col="race_id", test_ratio=0.05):
     """
     既存のsplit_data関数を流用
     """
@@ -45,20 +45,18 @@ def split_data(df, id_col="race_id", test_ratio=0.05, valid_ratio=0.05):
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
     test_cut = int(dataset_len * (1 - test_ratio))
-    valid_cut = int(test_cut * (1 - valid_ratio))
-    train_ids = race_ids[:valid_cut]
-    valid_ids = race_ids[valid_cut:test_cut]
+    train_ids = race_ids[:test_cut]
     test_ids = race_ids[test_cut:]
+
     train_df = df[df[id_col].isin(train_ids)].copy()
-    valid_df = df[df[id_col].isin(valid_ids)].copy()
     test_df = df[df[id_col].isin(test_ids)].copy()
-    return train_df, valid_df, test_df
+
+    return train_df, test_df
 
 def prepare_data(
     data_path,
     feature_path,
     test_ratio=0.1,
-    valid_ratio=0.1,
     id_col="race_id",
     single_odds_col="単勝",
     finishing_col="着順",
@@ -99,7 +97,7 @@ def prepare_data(
     for c in cat_cols:
         df[c] = df[c].fillna("missing").astype(str)
 
-    train_df, valid_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio, valid_ratio=valid_ratio)
+    train_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio)
 
     pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
     pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
@@ -115,93 +113,74 @@ def prepare_data(
     scaler_horse = StandardScaler()
     if len(pca_horse_target_cols) > 0:
         horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
-        horse_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols])
         horse_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols])
     else:
         horse_train_scaled = np.zeros((len(train_df), 0))
-        horse_valid_scaled = np.zeros((len(valid_df), 0))
         horse_test_scaled = np.zeros((len(test_df), 0))
 
     pca_dim_horse = min(pca_dim_horse, horse_train_scaled.shape[1]) if horse_train_scaled.shape[1] > 0 else 0
     if pca_dim_horse > 0:
         pca_model_horse = PCA(n_components=pca_dim_horse)
         horse_train_pca = pca_model_horse.fit_transform(horse_train_scaled)
-        horse_valid_pca = pca_model_horse.transform(horse_valid_scaled)
         horse_test_pca = pca_model_horse.transform(horse_test_scaled)
     else:
         horse_train_pca = horse_train_scaled
-        horse_valid_pca = horse_valid_scaled
         horse_test_pca = horse_test_scaled
 
     scaler_jockey = StandardScaler()
     if len(pca_jockey_target_cols) > 0:
         jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
-        jockey_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols])
         jockey_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols])
     else:
         jockey_train_scaled = np.zeros((len(train_df), 0))
-        jockey_valid_scaled = np.zeros((len(valid_df), 0))
         jockey_test_scaled = np.zeros((len(test_df), 0))
 
     pca_dim_jockey = min(pca_dim_jockey, jockey_train_scaled.shape[1]) if jockey_train_scaled.shape[1] > 0 else 0
     if pca_dim_jockey > 0:
         pca_model_jockey = PCA(n_components=pca_dim_jockey)
         jockey_train_pca = pca_model_jockey.fit_transform(jockey_train_scaled)
-        jockey_valid_pca = pca_model_jockey.transform(jockey_valid_scaled)
         jockey_test_pca = pca_model_jockey.transform(jockey_test_scaled)
     else:
         jockey_train_pca = jockey_train_scaled
-        jockey_valid_pca = jockey_valid_scaled
         jockey_test_pca = jockey_test_scaled
 
     scaler_other = StandardScaler()
     if len(other_num_cols) > 0:
         other_train = scaler_other.fit_transform(train_df[other_num_cols])
-        other_valid = scaler_other.transform(valid_df[other_num_cols])
         other_test = scaler_other.transform(test_df[other_num_cols])
     else:
         other_train = np.zeros((len(train_df), 0))
-        other_valid = np.zeros((len(valid_df), 0))
         other_test = np.zeros((len(test_df), 0))
 
     for c in cat_cols:
         train_df[c] = train_df[c].astype('category')
-        valid_df[c] = valid_df[c].astype('category')
         test_df[c] = test_df[c].astype('category')
         train_cat = train_df[c].cat.categories
-        valid_df[c] = pd.Categorical(valid_df[c], categories=train_cat)
         test_df[c] = pd.Categorical(test_df[c], categories=train_cat)
         train_df[c] = train_df[c].cat.codes
-        valid_df[c] = valid_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
 
     cat_features_train = train_df[cat_cols].values
-    cat_features_valid = valid_df[cat_cols].values
     cat_features_test = test_df[cat_cols].values
 
     X_train_num = np.concatenate([other_train, horse_train_pca, jockey_train_pca], axis=1)
-    X_valid_num = np.concatenate([other_valid, horse_valid_pca, jockey_valid_pca], axis=1)
     X_test_num = np.concatenate([other_test, horse_test_pca, jockey_test_pca], axis=1)
 
     X_train = np.concatenate([cat_features_train, X_train_num], axis=1)
-    X_valid = np.concatenate([cat_features_valid, X_valid_num], axis=1)
     X_test = np.concatenate([cat_features_test, X_test_num], axis=1)
 
     p_cols = ["P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5"]
     p_train = train_df[p_cols].fillna(0.0).values
-    p_valid = valid_df[p_cols].fillna(0.0).values
     p_test = test_df[p_cols].fillna(0.0).values
 
     X_train = np.concatenate([X_train, p_train], axis=1)
-    X_valid = np.concatenate([X_valid, p_valid], axis=1)
     X_test = np.concatenate([X_test, p_test], axis=1)
 
     train_df["X"] = list(X_train)
-    valid_df["X"] = list(X_valid)
     test_df["X"] = list(X_test)
 
     dim = X_train.shape[1]
-    return train_df, valid_df, test_df, dim
+    return train_df, test_df, dim
 
 class MultiRaceEnvContinuous(gym.Env):
     """
@@ -539,12 +518,11 @@ def run_training_and_inference_offpolicy(
     random.seed(seed_value)
     np.random.seed(seed_value)
 
-    train_df, valid_df, test_df, dim = prepare_data(
+    train_df, test_df, dim = prepare_data(
         data_path=data_path,
         feature_path=feature_path,
         id_col="race_id",
-        test_ratio=0.1,
-        valid_ratio=0.1,
+        test_ratio=0.05,
         single_odds_col="単勝",
         finishing_col="着順",
         pca_dim_horse=50,
@@ -553,17 +531,6 @@ def run_training_and_inference_offpolicy(
 
     train_env = MultiRaceEnvContinuous(
         df=train_df,
-        feature_dim=dim,
-        id_col=id_col,
-        horse_col=horse_col,
-        horse_name_col=horse_name_col,
-        single_odds_col=single_odds_col,
-        finishing_col=finishing_col,
-        cost=cost,
-        races_per_episode=races_per_episode
-    )
-    valid_env = MultiRaceEnvContinuous(
-        df=valid_df,
         feature_dim=dim,
         id_col=id_col,
         horse_col=horse_col,
@@ -605,10 +572,6 @@ def run_training_and_inference_offpolicy(
     # 学習データでのROI
     train_roi, _ = evaluate_model(train_env, model)
     print(f"Train ROI: {train_roi*100:.2f}%")
-
-    # バリデーションデータでのROI
-    valid_roi, _ = evaluate_model(valid_env, model)
-    print(f"Valid ROI: {valid_roi*100:.2f}%")
 
     # テストデータでのROI
     test_env = MultiRaceEnvContinuous(
