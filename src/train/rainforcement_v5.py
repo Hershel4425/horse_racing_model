@@ -106,6 +106,9 @@ def prepare_data(
     ]
     df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
+    # 馬名をコード化しないように、別列に退避しておく
+    df["馬名"+"_raw"] = df["馬名"].astype(str)
+
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
     if finishing_col in num_cols:
@@ -493,7 +496,7 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
                 results.append({
                     "race_id": rid,
                     "馬番": row[env.horse_col],
-                    "馬名": row[env.horse_name_col],
+                    "馬名": row[env.horse_name_col + "_raw"],
                     "着順": row[env.finishing_col],
                     "単勝": row[env.single_odds_col],
                     "複勝": row[env.place_odds_col],
