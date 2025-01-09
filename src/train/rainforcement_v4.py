@@ -449,7 +449,10 @@ class OffPolicyStatsCallback(BaseCallback):
             "iteration": [],
             "timesteps": [],
             "time_elapsed": [],
-            "train_reward": []
+            "train_reward": [],
+            # 追加: actor_loss / critic_loss を格納するリスト
+            "actor_loss": [],
+            "critic_loss": []
         }
         self.iter_count = 0
 
@@ -460,33 +463,57 @@ class OffPolicyStatsCallback(BaseCallback):
         pass
 
     def _on_rollout_end(self):
-        # SACではrollout_endごとにtimestepsが増えるので、そのタイミングでログを記録
+        """
+        SAC/TD3ではrolloutが終わるたびに呼ばれるので、このタイミングでロスを拾う。
+        """
         self.iter_count += 1
         self.iteration_logs["iteration"].append(self.iter_count)
         self.iteration_logs["timesteps"].append(self.model.num_timesteps)
-        # Stable-Baselines3 の logger から情報を取る形を簡易化
+
+        # SB3 の logger に格納された値を取得:
         self.iteration_logs["time_elapsed"].append(
             self.model.logger.name_to_value.get("time/total_timesteps", 0)
         )
-        # 報酬履歴を追うなら episode_rewards などを保存する拡張が必要
+        # actor_loss / critic_loss を取得 (ない場合は None が返るので np.nan に変換)
+        actor_loss = self.model.logger.name_to_value.get("train/actor_loss")
+        critic_loss = self.model.logger.name_to_value.get("train/critic_loss")
+        self.iteration_logs["actor_loss"].append(actor_loss if actor_loss is not None else np.nan)
+        self.iteration_logs["critic_loss"].append(critic_loss if critic_loss is not None else np.nan)
+
+        # もし他に報酬情報などを追う場合は合わせて記録する
 
     def plot_logs(self):
         """
         ログを可視化。
-        今後複勝対応など拡張時も同じ仕組みを再利用可能。
+        actor_loss / critic_loss を追加で可視化するため、2行×2列に変更。
         """
-        fig, axs = plt.subplots(1, 2, figsize=(12, 4))
         logs = self.iteration_logs
 
-        axs[0].plot(logs["iteration"], logs["timesteps"], marker='o', label="timesteps")
-        axs[0].set_xlabel("iteration")
-        axs[0].set_ylabel("timesteps")
-        axs[0].legend()
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8))
 
-        axs[1].plot(logs["iteration"], logs["time_elapsed"], marker='o', label="time/total_timesteps")
-        axs[1].set_xlabel("iteration")
-        axs[1].set_ylabel("time/total_timesteps")
-        axs[1].legend()
+        # 1段目左: timesteps
+        axs[0, 0].plot(logs["iteration"], logs["timesteps"], marker='o', label="timesteps")
+        axs[0, 0].set_xlabel("iteration")
+        axs[0, 0].set_ylabel("timesteps")
+        axs[0, 0].legend()
+
+        # 1段目右: time/total_timesteps
+        axs[0, 1].plot(logs["iteration"], logs["time_elapsed"], marker='o', label="time/total_timesteps")
+        axs[0, 1].set_xlabel("iteration")
+        axs[0, 1].set_ylabel("time/total_timesteps")
+        axs[0, 1].legend()
+
+        # 2段目左: actor_loss
+        axs[1, 0].plot(logs["iteration"], logs["actor_loss"], marker='o', color='red', label="actor_loss")
+        axs[1, 0].set_xlabel("iteration")
+        axs[1, 0].set_ylabel("actor_loss")
+        axs[1, 0].legend()
+
+        # 2段目右: critic_loss
+        axs[1, 1].plot(logs["iteration"], logs["critic_loss"], marker='o', color='blue', label="critic_loss")
+        axs[1, 1].set_xlabel("iteration")
+        axs[1, 1].set_ylabel("critic_loss")
+        axs[1, 1].legend()
 
         plt.tight_layout()
         plt.show()
@@ -556,7 +583,7 @@ def run_training_and_inference_offpolicy(
     sac_hyperparams = {
         "learning_rate": 3e-4,
         "buffer_size": 100000,
-        "batch_size": 256,
+        "batch_size": 512,
         "ent_coef": "auto",
         "gamma": 0.99,
         "tau": 0.005,
