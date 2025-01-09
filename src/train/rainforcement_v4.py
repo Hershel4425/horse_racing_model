@@ -45,6 +45,7 @@ def split_data(df, id_col="race_id", test_ratio=0.05):
     df = df.sort_values('date').reset_index(drop=True)
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
+    print(f'total race_id : {dataset_len}')
     test_cut = int(dataset_len * (1 - test_ratio))
     train_ids = race_ids[:test_cut]
     test_ids = race_ids[test_cut:]
@@ -363,6 +364,10 @@ class MultiRaceEnvContinuous(gym.Env):
             reward = np.log1p(ratio)
         else:
             reward = 0.0
+    
+        # 追加: race_costが100未満のときにペナルティ
+        if race_cost < 100:
+            reward -= 0.1
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
@@ -535,7 +540,7 @@ def run_training_and_inference_offpolicy(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
-    total_timesteps=100000,
+    total_timesteps=10000,
     races_per_episode=16,
     seed_value=42
 ):

@@ -419,6 +419,10 @@ class MultiRaceEnvContinuous(gym.Env):
         else:
             reward = 0.0
 
+        # 追加: race_costが100未満のときにペナルティ
+        if race_cost < 100:
+            reward -= 0.1
+
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
         if self.capital <= 0:
