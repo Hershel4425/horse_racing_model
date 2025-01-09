@@ -425,7 +425,7 @@ class MultiRaceEnvContinuous(gym.Env):
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
-        if self.capital <= 0:
+        if self.capital <= 500:
             terminated = True
 
         self.terminated = terminated

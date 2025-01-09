@@ -371,7 +371,7 @@ class MultiRaceEnvContinuous(gym.Env):
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
-        if self.capital <= 0:
+        if self.capital <= 500:
             terminated = True
 
         self.terminated = terminated
@@ -562,7 +562,7 @@ def run_training_and_inference_offpolicy(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
-    total_timesteps=10000,
+    total_timesteps=1000000,
     races_per_episode=16,
     seed_value=42
 ):
