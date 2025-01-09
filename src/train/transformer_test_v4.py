@@ -33,12 +33,12 @@ if not os.path.exists(MODEL_SAVE_DIR):
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer/{DATE_STRING}.csv")
 SAVE_PATH_FULL_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer/{DATE_STRING}_full.csv")
-SAVE_PATH_MODEL = os.path.join(MODEL_SAVE_DIR, "model")
-SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse")
-SAVE_PATH_PCA_MODEL_JOCKEY = os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey")
-SAVE_PATH_SCALER_HORSE = os.path.join(MODEL_SAVE_DIR, "scaler_horse")
-SAVE_PATH_SCALER_JOCKEY = os.path.join(MODEL_SAVE_DIR, "scaler_jockey")
-SAVE_PATH_SCALER_OTHER = os.path.join(MODEL_SAVE_DIR, "scaler_other")
+SAVE_PATH_MODEL = os.path.join(MODEL_SAVE_DIR, "model.pickle")
+SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse.pickle")
+SAVE_PATH_PCA_MODEL_JOCKEY = os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey.pickle")
+SAVE_PATH_SCALER_HORSE = os.path.join(MODEL_SAVE_DIR, "scaler_horse.pickle")
+SAVE_PATH_SCALER_JOCKEY = os.path.join(MODEL_SAVE_DIR, "scaler_jockey.pickle")
+SAVE_PATH_SCALER_OTHER = os.path.join(MODEL_SAVE_DIR, "scaler_other.pickle")
 
 # =====================================================
 # Datasetクラス
