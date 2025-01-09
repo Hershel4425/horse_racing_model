@@ -325,7 +325,7 @@ class MultiRaceEnvContinuous(gym.Env):
         # 最大賭け額に対して割合を掛け合わせて、各馬への実ベット額を計算
         total_bet = min(self.max_total_bet_cost, self.capital)  # 所持金と上限の小さい方
         bet_amounts = total_bet * bet_ratio  # 各馬へのベット
-        race_cost = np.sum(bet_amounts)      # 実際に合計ベットした金額
+        race_cost = np.sum(bet_amounts) * self.cost     # 実際に合計ベットした金額
         self.capital -= race_cost            # 所持金を減らす
 
         # 払い戻し計算（単勝のみ）
@@ -334,8 +334,7 @@ class MultiRaceEnvContinuous(gym.Env):
             if i < n_horses:
                 row = race_df.iloc[i]
                 if row[self.finishing_col] == 1:
-                    odds = row[self.single_odds_col]
-                    race_profit += bet_amounts[i] * odds
+                    race_profit += bet_amounts[i] * row[self.single_odds_col] * self.cost
 
         # 複勝にも対応するにはここで「もし複勝対応なら...」とブロックを追加予定
 
@@ -385,7 +384,7 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
 
         total_bet = min(env.max_total_bet_cost, env.capital)
         bet_amounts = total_bet * bet_ratio
-        race_cost = np.sum(bet_amounts)
+        race_cost = np.sum(bet_amounts) * env.cost  # 支出
         race_profit = 0.0
 
         n_horses = len(subdf)
@@ -395,7 +394,7 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
                 finishing = row[env.finishing_col]
                 odds = row[env.single_odds_col]
                 if finishing == 1:
-                    race_profit += bet_amounts[i] * odds
+                    race_profit += bet_amounts[i] * odds * env.cost
                 
                 # 今後複勝拡張なら、複勝払戻しを別途足す
 
