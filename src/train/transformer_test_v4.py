@@ -32,6 +32,7 @@ if not os.path.exists(MODEL_SAVE_DIR):
 
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer/{DATE_STRING}.csv")
+SAVE_PATH_FULL_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer/{DATE_STRING}_full.csv")
 SAVE_PATH_MODEL = os.path.join(MODEL_SAVE_DIR, "model")
 SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse")
 SAVE_PATH_PCA_MODEL_JOCKEY = os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey")
@@ -751,6 +752,51 @@ def run_train_time_split(
         'T_pop5': all_trues[:, 5],
     })
     pred_df.to_csv(SAVE_PATH_PRED, index=False)
+
+    #####################################
+    # 1) 3つのDatasetをConcatする
+    #####################################
+    from torch.utils.data import ConcatDataset
+
+    # train, valid, test のデータセットを結合
+    full_dataset = ConcatDataset([base_train_dataset, base_valid_dataset, base_test_dataset])
+
+    # すべてまとめた DataLoader
+    full_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=False)
+
+    #####################################
+    # 2) まとめたDatasetで推論する
+    #####################################
+    # すでに学習済みの models, weights を流用し、
+    # test_evaluate_ensemble と同じ要領で予測を実施
+    full_loss_each6, all_probs_full, all_trues_full, all_rids_full, all_horses_full = \
+        test_evaluate_ensemble(full_loader, models, weights)
+
+    print("Full BCE Logloss each of 6 targets (Weighted Ensemble):",
+        [f"{v:.4f}" for v in full_loss_each6])
+
+    #####################################
+    # 3) 推論結果をDataFrameにまとめて保存
+    #####################################
+    full_pred_df = pd.DataFrame({
+        'race_id': all_rids_full,
+        '馬番': all_horses_full,
+        'P_top1': all_probs_full[:, 0],
+        'P_top3': all_probs_full[:, 1],
+        'P_top5': all_probs_full[:, 2],
+        'P_pop1': all_probs_full[:, 3],
+        'P_pop3': all_probs_full[:, 4],
+        'P_pop5': all_probs_full[:, 5],
+        'T_top1': all_trues_full[:, 0],
+        'T_top3': all_trues_full[:, 1],
+        'T_top5': all_trues_full[:, 2],
+        'T_pop1': all_trues_full[:, 3],
+        'T_pop3': all_trues_full[:, 4],
+        'T_pop5': all_trues_full[:, 5],
+    })
+
+    full_pred_df.to_csv(SAVE_PATH_FULL_PRED, index=False)
+
 
     # キャリブレーション曲線表示
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
