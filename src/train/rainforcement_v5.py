@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
-MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}")
+MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}/model.pickle")
 if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 

@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
-MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}")
+MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}/model.pickle")
 if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 
@@ -413,7 +413,7 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
 
         bet_ratio = np.zeros_like(clipped_action)
         if sum_action > 0:
-            bet_ratio = clipped_action / sum_action
+            bet_ratio[idx_top] = selected_action / sum_action
 
         total_bet = min(env.max_total_bet_cost, env.capital)
         bet_amounts = total_bet * bet_ratio
