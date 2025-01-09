@@ -3,6 +3,7 @@ import re
 import datetime
 import random
 from tqdm import tqdm
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -596,6 +597,10 @@ def run_training_and_inference_offpolicy(
     )
 
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
+
+    # モデル保存
+    with open(MODEL_SAVE_DIR, 'wb') as f:
+        pickle.dump(model, f)
 
     # 学習データでのROI
     train_roi, _ = evaluate_model(train_env, model)
