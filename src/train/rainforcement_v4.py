@@ -21,12 +21,15 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 import matplotlib.pyplot as plt
+from matplotlib import rcParams
+rcParams['font.family'] = 'sans-serif'
+rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
 # 今後、単勝だけでなく複勝対応などの拡張を見越して、既存コードを修正・流用しながらオフポリシーSACに切り替える
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
-MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}/model.pickle")
+MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}")
 if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 
@@ -35,7 +38,7 @@ pred_dir = os.path.dirname(SAVE_PATH_PRED)
 if not os.path.exists(pred_dir):
     os.makedirs(pred_dir)
 
-DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743_full.csv")
+DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743.csv")
 FEATURE_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 
 def split_data(df, id_col="race_id", test_ratio=0.05):
@@ -626,11 +629,11 @@ def run_training_and_inference_offpolicy(
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
 
     # モデル保存
-    with open(MODEL_SAVE_DIR, 'wb') as f:
+    with open(MODEL_SAVE_DIR + '/model.pickle', 'wb') as f:
         pickle.dump(model, f)
 
     # 学習データでのROI
-    train_roi, _ = evaluate_model(train_env, model)
+    train_roi, train_df_out = evaluate_model(train_env, model)
     print(f"Train ROI: {train_roi*100:.2f}%")
 
     # テストデータでのROI
@@ -651,6 +654,78 @@ def run_training_and_inference_offpolicy(
     test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
 
     stats_callback.plot_logs()
+
+    # 回収率と掛け金の可視化
+    # まず、train用・test用の結果DataFrameそれぞれに払戻と個別ROI列を追加します。
+    # 例として、すでに evaluate_model(train_env, model) で得られた train_df_out、
+    # evaluate_model(test_env, model) で得られた test_df_out があるものとします。
+    # ここでは train_df_out / test_df_out に "bet_amount", "着順", "単勝" カラムが含まれている想定です。
+
+    # 払戻とROI(1レース1馬券単位)を列追加
+    for df_out in [train_df_out, test_df_out]:
+        df_out["payout"] = df_out.apply(
+            lambda row: row["bet_amount"] * row["単勝"] if row["着順"] == 1 and row["bet_amount"] > 0 else 0,
+            axis=1
+        )
+        df_out["roi"] = df_out.apply(
+            lambda row: (row["payout"] / row["bet_amount"]) if row["bet_amount"] > 0 else 0,
+            axis=1
+        )
+
+    # race_id単位で集計: 賭け金合計、払戻合計、ROI(レース単位)
+    train_race_agg = train_df_out.groupby("race_id").agg(
+        race_bet_amount=("bet_amount", "sum"),
+        race_payout=("payout", "sum")
+    ).reset_index()
+    train_race_agg["race_roi"] = train_race_agg["race_payout"] / train_race_agg["race_bet_amount"]
+
+    test_race_agg = test_df_out.groupby("race_id").agg(
+        race_bet_amount=("bet_amount", "sum"),
+        race_payout=("payout", "sum")
+    ).reset_index()
+    test_race_agg["race_roi"] = test_race_agg["race_payout"] / test_race_agg["race_bet_amount"]
+
+    # ----------------
+    # (1) train用ヒストグラム
+    # ----------------
+    plt.figure(figsize=(10, 6))
+    bins_bet = range(0, int(train_race_agg["race_bet_amount"].max()) + 100, 100)
+    plt.hist(train_race_agg["race_bet_amount"], bins=bins_bet, edgecolor="black")
+    plt.title("【Train】レース単位の賭け金合計ヒストグラム (100円区切り)")
+    plt.xlabel("race_bet_amount (円)")
+    plt.ylabel("レース件数")
+    plt.xticks(bins_bet, rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(train_race_agg["race_roi"], bins=50, edgecolor="black")
+    plt.title("【Train】レース単位の回収率ヒストグラム")
+    plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
+    plt.ylabel("レース件数")
+    plt.tight_layout()
+    plt.show()
+
+    # ----------------
+    # (2) test用ヒストグラム
+    # ----------------
+    plt.figure(figsize=(10, 6))
+    bins_bet_test = range(0, int(test_race_agg["race_bet_amount"].max()) + 100, 100)
+    plt.hist(test_race_agg["race_bet_amount"], bins=bins_bet_test, edgecolor="black")
+    plt.title("【Test】レース単位の賭け金合計ヒストグラム (100円区切り)")
+    plt.xlabel("race_bet_amount (円)")
+    plt.ylabel("レース件数")
+    plt.xticks(bins_bet_test, rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(test_race_agg["race_roi"], bins=50, edgecolor="black")
+    plt.title("【Test】レース単位の回収率ヒストグラム")
+    plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
+    plt.ylabel("レース件数")
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     run_training_and_inference_offpolicy()
