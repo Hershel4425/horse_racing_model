@@ -314,23 +314,31 @@ class MultiRaceEnvContinuous(gym.Env):
         n_horses = len(race_df)
 
         # 行動を [0,1] に正規化 -> ベット配分率に変換
-        # マイナス値が来たら0にクリップなど
+        ## 1) アクションを [0, 1] にクリップ
         clipped_action = np.clip(action, 0.0, 1.0)
-        sum_action = np.sum(clipped_action)
+
+        # 2) bet_amountが大きい上位3頭を選択
+        #   -> ソートして最後の3つを上位とみなす (3頭未満なら全頭を賭け対象)
+        top_k = min(3, n_horses)  
+        idx_top = np.argsort(clipped_action)[-top_k:]
+
+        # 3) 選択された上位馬の合計アクション値でベット配分を正規化
+        selected_action = clipped_action[idx_top]
+        sum_action = np.sum(selected_action)
+        bet_ratio = np.zeros_like(clipped_action)
         if sum_action > 0:
-            bet_ratio = clipped_action / sum_action
-        else:
-            bet_ratio = clipped_action
+            bet_ratio[idx_top] = selected_action / sum_action
 
-        # 最大賭け額に対して割合を掛け合わせて、各馬への実ベット額を計算
-        total_bet = min(self.max_total_bet_cost, self.capital)  # 所持金と上限の小さい方
-        bet_amounts = total_bet * bet_ratio  # 各馬へのベット
-        # bet_amounts を cost の整数倍に調整
+        # 4) 賭け可能総額を計算 (所持金と上限の小さい方)
+        total_bet = min(self.max_total_bet_cost, self.capital)
+        bet_amounts = total_bet * bet_ratio
+
+        #   cost の整数倍に丸める
         bet_amounts = np.floor(bet_amounts / self.cost) * self.cost
-        race_cost = np.sum(bet_amounts)     # 実際に合計ベットした金額
-        self.capital -= race_cost            # 所持金を減らす
+        race_cost = np.sum(bet_amounts)
+        self.capital -= race_cost
 
-        # 払い戻し計算（単勝のみ）
+        # 5) 単勝での払戻額を計算
         race_profit = 0.0
         for i in range(self.max_horses):
             if i < n_horses:
@@ -340,8 +348,17 @@ class MultiRaceEnvContinuous(gym.Env):
 
         # 複勝にも対応するにはここで「もし複勝対応なら...」とブロックを追加予定
 
+        # 6) 所持金を更新
         self.capital += race_profit
-        reward = race_profit - race_cost
+        
+        # 7) 報酬: 「(race_profit / race_cost)」を対数スケーリングして過剰フィットを緩和
+        #   (ベット額0のときは0報酬に)
+        if race_cost > 0:
+            ratio = race_profit / race_cost
+            # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
+            reward = np.log1p(ratio)
+        else:
+            reward = 0.0
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
@@ -378,11 +395,16 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
         # SACは連続アクションを出力
         action, _ = model.predict(obs, deterministic=True)
         clipped_action = np.clip(action, 0.0, 1.0)
-        sum_action = np.sum(clipped_action)
+        
+        n_horses = len(subdf)
+        top_k = min(3, n_horses)
+        idx_top = np.argsort(clipped_action)[-top_k:]
+        selected_action = clipped_action[idx_top]
+        sum_action = np.sum(selected_action)
+
+        bet_ratio = np.zeros_like(clipped_action)
         if sum_action > 0:
             bet_ratio = clipped_action / sum_action
-        else:
-            bet_ratio = clipped_action
 
         total_bet = min(env.max_total_bet_cost, env.capital)
         bet_amounts = total_bet * bet_ratio
@@ -509,7 +531,7 @@ def run_training_and_inference_offpolicy(
     single_odds_col='単勝',
     finishing_col='着順',
     cost=100,
-    total_timesteps=200000,
+    total_timesteps=100000,
     races_per_episode=16,
     seed_value=42
 ):
