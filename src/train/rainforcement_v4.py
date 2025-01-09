@@ -387,25 +387,38 @@ class MultiRaceEnvContinuous(gym.Env):
 
         return obs, float(reward), terminated, truncated, {}
 
-def evaluate_model(env: MultiRaceEnvContinuous, model):
+def evaluate_model(
+        env: MultiRaceEnvContinuous, 
+        model,
+        capital_reset_threshold=1000,
+        capital_reset_value=5000):
     """
     学習後のモデルを全レースに適用してROIを計算。
-    今後、複勝など拡張の報酬を別途記録する仕組みを追加してもよい。
+    もし所持金が一定額を下回った場合、所持金を指定額にリセットする。
+    
+    - capital_reset_threshold: リセットを発動する閾値
+    - capital_reset_value: リセット後の所持金額
     """
-    original_ids = env.race_ids
+    # 評価用の一時的な所持金
+    capital = env.initial_capital
+
     cost_sum = 0.0
     profit_sum = 0.0
     results = []
 
-    for rid in tqdm(original_ids):
+    # 元の環境が保持しているレースIDリストを利用
+    for rid in tqdm(env.race_ids):
+        # レースのデータ取得
         subdf = env.race_map[rid].sort_values(env.horse_col).reset_index(drop=True)
+        # 環境の観測作成ロジックを流用
         obs = env._get_obs_for_race(subdf)
 
         # SACは連続アクションを出力
         action, _ = model.predict(obs, deterministic=True)
         clipped_action = np.clip(action, 0.0, 1.0)
-        
+
         n_horses = len(subdf)
+        # 学習時と同様: アクション上位3頭だけ選択して正規化
         top_k = min(3, n_horses)
         idx_top = np.argsort(clipped_action)[-top_k:]
         selected_action = clipped_action[idx_top]
@@ -415,39 +428,48 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
         if sum_action > 0:
             bet_ratio[idx_top] = selected_action / sum_action
 
-        total_bet = min(env.max_total_bet_cost, env.capital)
+        # 賭けられる総額
+        total_bet = min(env.max_total_bet_cost, capital)
         bet_amounts = total_bet * bet_ratio
-        # bet_amounts を cost の整数倍に調整
+        # コスト単位で丸める
         bet_amounts = np.floor(bet_amounts / env.cost) * env.cost
+
         race_cost = np.sum(bet_amounts)
         race_profit = 0.0
 
-        n_horses = len(subdf)
+        # 着順1位に賭けていたら払戻しを取得
         for i in range(env.max_horses):
             if i < n_horses:
                 row = subdf.iloc[i]
                 finishing = row[env.finishing_col]
                 odds = row[env.single_odds_col]
+                horse_name = row[env.horse_name_col + "_raw"]
+                # 単勝が当たった場合
                 if finishing == 1:
                     race_profit += bet_amounts[i] * odds
-                
-                # 今後複勝拡張なら、複勝払戻しを別途足す
 
-            # 結果保存
-            if i < n_horses:
-                row_i = subdf.iloc[i]
+                # 結果を保存
                 results.append({
                     "race_id": rid,
-                    "馬番": row_i[env.horse_col],
-                    "馬名": row[env.horse_name_col + "_raw"],
-                    "着順": row_i[env.finishing_col],
-                    "単勝": row_i[env.single_odds_col],
+                    "馬番": row[env.horse_col],
+                    "馬名": horse_name,
+                    "着順": finishing,
+                    "単勝": odds,
                     "bet_amount": bet_amounts[i]
                 })
+
+        # 賭け金を差し引き、払戻しを上乗せ
+        capital -= race_cost
+        capital += race_profit
+
+        # 所持金が閾値より下がったらリセット
+        if capital < capital_reset_threshold:
+            capital = capital_reset_value
 
         cost_sum += race_cost
         profit_sum += race_profit
 
+    # 最終的なROI
     roi = (profit_sum / cost_sum) if cost_sum > 0 else 0.0
     return roi, pd.DataFrame(results)
 
