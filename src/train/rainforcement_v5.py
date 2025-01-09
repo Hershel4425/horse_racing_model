@@ -35,7 +35,7 @@ pred_dir = os.path.dirname(SAVE_PATH_PRED)
 if not os.path.exists(pred_dir):
     os.makedirs(pred_dir)
 
-DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250106194932.csv")
+DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743_full.csv")
 FEATURE_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 FUKUSHO_PATH = os.path.join(ROOT_PATH, "data/01_processed/50_odds/odds_df.csv")
 
