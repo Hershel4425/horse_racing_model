@@ -21,12 +21,15 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 import matplotlib.pyplot as plt
+from matplotlib import rcParams
+rcParams['font.family'] = 'sans-serif'
+rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
 # 今後、単勝だけでなく複勝対応などの拡張を見越して、既存コードを修正・流用しながらオフポリシーSACに切り替える
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
-MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}/model.pickle")
+MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/SAC_offpolicy/{DATE_STRING}")
 if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 
@@ -46,6 +49,8 @@ def split_data(df, id_col="race_id", test_ratio=0.05):
     df = df.sort_values('date').reset_index(drop=True)
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
+    print(f'total race_id : {dataset_len}')
+
     test_cut = int(dataset_len * (1 - test_ratio))
     train_ids = race_ids[:test_cut]
     test_ids = race_ids[test_cut:]
@@ -98,12 +103,17 @@ def prepare_data(
 
 
     default_leakage_cols = [
-        '斤量','タイム','着差','上がり3F','馬体重','人気','horse_id','jockey_id','trainer_id','順位点',
-        '入線','1着タイム差','先位タイム差','5着着差','増減','1C通過順位','2C通過順位','3C通過順位',
-        '4C通過順位','賞金','前半ペース','後半ペース','ペース','上がり3F順位','100m','200m','300m',
+        '斤量','タイム','着差','上がり3F','馬体重','人気',
+        'horse_id','jockey_id','trainer_id',
+        '順位点',
+        '入線','1着タイム差','先位タイム差','5着着差','増減',
+        '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金',
+        '前半ペース','後半ペース','ペース','上がり3F順位',
+        '100m','200m','300m',
         '400m','500m','600m','700m','800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
         '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m','2400m','2500m','2600m',
-        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m','horse_ability'
+        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m',
+        'horse_ability'
     ]
     df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
@@ -271,7 +281,6 @@ class MultiRaceEnvContinuous(gym.Env):
         )
 
         # 行動空間:
-        # 今後複勝にも対応予定 -> "各馬に何％賭けるか" を連続で出力する設計にすると拡張しやすい
         # 例: 各馬のactionは[0.0 ~ 1.0]で、総和<=1.0に正規化する運用など
         # ここでは簡単に [-1,1] を馬ごとに出す形にしておき、後ほど正規化して賭け金を計算
         # ★ アクション空間を 2倍に (単勝 + 複勝)
@@ -357,14 +366,15 @@ class MultiRaceEnvContinuous(gym.Env):
 
         # 2) bet_amountが大きい上位3頭を選択
         #   -> ソートして最後の3つを上位とみなす (3頭未満なら全頭を賭け対象)
-        top_k = min(3, n_horses)
-        idx_top_win = np.argsort(win_action)[-top_k:]
-        idx_top_place = np.argsort(place_action)[-top_k:]
+        top_k_win = min(1, n_horses)
+        top_k_place = min(3, n_horses)
+        idx_top_win = np.argsort(win_action)[-top_k_win:]
+        idx_top_place = np.argsort(place_action)[-top_k_place:]
 
         # 3) 選択された上位馬の合計アクション値でベット配分を正規化
         # 合計値で正規化 (単勝と複勝は別々にスケール)
-        sum_win = np.sum(win_action[idx_top_win])
-        sum_place = np.sum(place_action[idx_top_place])
+        sum_win = np.sum(win_action)
+        sum_place = np.sum(place_action)
         bet_ratio_win = np.zeros_like(win_action)
         bet_ratio_place = np.zeros_like(place_action)
         if sum_win > 0:
@@ -419,9 +429,9 @@ class MultiRaceEnvContinuous(gym.Env):
         else:
             reward = 0.0
 
-        # # 追加: race_costが100未満のときにペナルティ
-        # if race_cost < 100:
-        #     reward -= 0.1
+        # 追加: race_costが100未満のときにペナルティ
+        if race_cost < 100:
+            reward -= 0.1
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
@@ -465,8 +475,8 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
         idx_top_win = np.argsort(win_action)[-top_k:]
         idx_top_place = np.argsort(place_action)[-top_k:]
         
-        sum_win = np.sum(win_action[idx_top_win])
-        sum_place = np.sum(place_action[idx_top_place])
+        sum_win = np.sum(win_action)
+        sum_place = np.sum(place_action)
         
         bet_ratio_win = np.zeros_like(win_action)
         bet_ratio_place = np.zeros_like(place_action)
@@ -670,12 +680,12 @@ def run_training_and_inference_offpolicy(
 
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
 
-    # モデル保存
-    with open(MODEL_SAVE_DIR, 'wb') as f:
-        pickle.dump(model, f)
+    # # モデル保存
+    # with open(MODEL_SAVE_DIR, 'wb') as f:
+    #     pickle.dump(model, f)
 
     # 学習データでのROI
-    train_roi, _ = evaluate_model(train_env, model)
+    train_roi, train_df_out = evaluate_model(train_env, model)
     print(f"Train ROI: {train_roi*100:.2f}%")
 
     # テストデータでのROI
@@ -697,6 +707,78 @@ def run_training_and_inference_offpolicy(
     test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
 
     stats_callback.plot_logs()
+
+    # 回収率と掛け金の可視化
+    # まず、train用・test用の結果DataFrameそれぞれに払戻と個別ROI列を追加します。
+    # 例として、すでに evaluate_model(train_env, model) で得られた train_df_out、
+    # evaluate_model(test_env, model) で得られた test_df_out があるものとします。
+    # ここでは train_df_out / test_df_out に "bet_amount", "着順", "単勝" カラムが含まれている想定です。
+
+    # 払戻とROI(1レース1馬券単位)を列追加
+    for df_out in [train_df_out, test_df_out]:
+        df_out["payout"] = df_out.apply(
+            lambda row: row["bet_amount"] * row["単勝"] if row["着順"] == 1 and row["bet_amount"] > 0 else 0,
+            axis=1
+        )
+        df_out["roi"] = df_out.apply(
+            lambda row: (row["payout"] / row["bet_amount"]) if row["bet_amount"] > 0 else 0,
+            axis=1
+        )
+
+    # race_id単位で集計: 賭け金合計、払戻合計、ROI(レース単位)
+    train_race_agg = train_df_out.groupby("race_id").agg(
+        race_bet_amount=("bet_amount", "sum"),
+        race_payout=("payout", "sum")
+    ).reset_index()
+    train_race_agg["race_roi"] = train_race_agg["race_payout"] / (train_race_agg["race_bet_amount"] + 1e-15)
+
+    test_race_agg = test_df_out.groupby("race_id").agg(
+        race_bet_amount=("bet_amount", "sum"),
+        race_payout=("payout", "sum")
+    ).reset_index()
+    test_race_agg["race_roi"] = test_race_agg["race_payout"] / (test_race_agg["race_bet_amount"]+ 1e-15)
+
+    # ----------------
+    # (1) train用ヒストグラム
+    # ----------------
+    plt.figure(figsize=(10, 6))
+    bins_bet = range(0, int(train_race_agg["race_bet_amount"].max()) + 100, 100)
+    plt.hist(train_race_agg["race_bet_amount"], bins=bins_bet, edgecolor="black")
+    plt.title("【Train】レース単位の賭け金合計ヒストグラム (100円区切り)")
+    plt.xlabel("race_bet_amount (円)")
+    plt.ylabel("レース件数")
+    plt.xticks(bins_bet, rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(train_race_agg["race_roi"], bins=50, edgecolor="black")
+    plt.title("【Train】レース単位の回収率ヒストグラム")
+    plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
+    plt.ylabel("レース件数")
+    plt.tight_layout()
+    plt.show()
+
+    # ----------------
+    # (2) test用ヒストグラム
+    # ----------------
+    plt.figure(figsize=(10, 6))
+    bins_bet_test = range(0, int(test_race_agg["race_bet_amount"].max()) + 100, 100)
+    plt.hist(test_race_agg["race_bet_amount"], bins=bins_bet_test, edgecolor="black")
+    plt.title("【Test】レース単位の賭け金合計ヒストグラム (100円区切り)")
+    plt.xlabel("race_bet_amount (円)")
+    plt.ylabel("レース件数")
+    plt.xticks(bins_bet_test, rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(test_race_agg["race_roi"], bins=50, edgecolor="black")
+    plt.title("【Test】レース単位の回収率ヒストグラム")
+    plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
+    plt.ylabel("レース件数")
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     run_training_and_inference_offpolicy()

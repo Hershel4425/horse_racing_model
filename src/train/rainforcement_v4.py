@@ -209,7 +209,7 @@ class MultiRaceEnvContinuous(gym.Env):
         finishing_col="着順",
         cost=100,
         races_per_episode=16,
-        initial_capital=5000,
+        initial_capital=10000,
         max_total_bet_cost=1000.0
     ):
         """
@@ -332,7 +332,7 @@ class MultiRaceEnvContinuous(gym.Env):
 
         # 3) 選択された上位馬の合計アクション値でベット配分を正規化
         selected_action = clipped_action[idx_top]
-        sum_action = np.sum(selected_action)
+        sum_action = np.sum(clipped_action)
         bet_ratio = np.zeros_like(clipped_action)
         if sum_action > 0:
             bet_ratio[idx_top] = selected_action / sum_action
@@ -368,9 +368,9 @@ class MultiRaceEnvContinuous(gym.Env):
         else:
             reward = 0.0
     
-        # # 追加: race_costが100未満のときにペナルティ
-        # if race_cost < 100:
-        #     reward -= 0.1
+        # 追加: race_costが100未満のときにペナルティ
+        if race_cost < 100:
+            reward -= 0.1
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
@@ -425,7 +425,7 @@ def evaluate_model(
         top_k = min(3, n_horses)
         idx_top = np.argsort(clipped_action)[-top_k:]
         selected_action = clipped_action[idx_top]
-        sum_action = np.sum(selected_action)
+        sum_action = np.sum(clipped_action)
 
         bet_ratio = np.zeros_like(clipped_action)
         if sum_action > 0:
@@ -628,9 +628,9 @@ def run_training_and_inference_offpolicy(
 
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
 
-    # モデル保存
-    with open(MODEL_SAVE_DIR + '/model.pickle', 'wb') as f:
-        pickle.dump(model, f)
+    # # モデル保存
+    # with open(MODEL_SAVE_DIR + '/model.pickle', 'wb') as f:
+    #     pickle.dump(model, f)
 
     # 学習データでのROI
     train_roi, train_df_out = evaluate_model(train_env, model)
@@ -677,13 +677,13 @@ def run_training_and_inference_offpolicy(
         race_bet_amount=("bet_amount", "sum"),
         race_payout=("payout", "sum")
     ).reset_index()
-    train_race_agg["race_roi"] = train_race_agg["race_payout"] / train_race_agg["race_bet_amount"]
+    train_race_agg["race_roi"] = train_race_agg["race_payout"] / (train_race_agg["race_bet_amount"] + 1e-15)
 
     test_race_agg = test_df_out.groupby("race_id").agg(
         race_bet_amount=("bet_amount", "sum"),
         race_payout=("payout", "sum")
     ).reset_index()
-    test_race_agg["race_roi"] = test_race_agg["race_payout"] / test_race_agg["race_bet_amount"]
+    test_race_agg["race_roi"] = test_race_agg["race_payout"] / (test_race_agg["race_bet_amount"]+ 1e-15)
 
     # ----------------
     # (1) train用ヒストグラム
