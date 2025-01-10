@@ -359,10 +359,10 @@ class MultiRaceEnvContinuous(gym.Env):
         # 6) 所持金を更新
         self.capital += race_profit
         
-        # 7) 報酬: 「(race_profit / race_cost)」を対数スケーリングして過剰フィットを緩和
+        # 7) 報酬: 「(race_profit - race_cost / race_cost)」を対数スケーリングして過剰フィットを緩和
         #   (ベット額0のときは0報酬に)
         if race_cost > 0:
-            ratio = race_profit / race_cost
+            ratio = (race_profit - race_cost) / race_cost
             # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
             reward = np.log1p(ratio)
         else:
