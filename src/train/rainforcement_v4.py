@@ -96,8 +96,8 @@ def prepare_data(
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
     if finishing_col in num_cols:
         num_cols.remove(finishing_col)
-    if single_odds_col in num_cols:
-        num_cols.remove(single_odds_col)
+    # if single_odds_col in num_cols:
+    #     num_cols.remove(single_odds_col)
 
     for c in num_cols:
         df[c] = df[c].fillna(0)

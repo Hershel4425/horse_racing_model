@@ -153,8 +153,8 @@ def prepare_data(
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
     if finishing_col in num_cols:
         num_cols.remove(finishing_col)
-    if single_odds_col in num_cols:
-        num_cols.remove(single_odds_col)
+    # if single_odds_col in num_cols:
+    #     num_cols.remove(single_odds_col)
     if place_odds_col in num_cols:
         num_cols.remove(place_odds_col)
 
