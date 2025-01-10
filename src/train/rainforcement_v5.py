@@ -528,8 +528,8 @@ def evaluate_model(
             bet_ratio_place[idx_top_place] = place_action[idx_top_place] / sum_place
 
         total_bet = min(env.max_total_bet_cost, env.capital)
-        bet_win = total_bet * 0.5
-        bet_place = total_bet * 0.5
+        bet_win = total_bet * WIN_RATIO
+        bet_place = total_bet * PLACE_RATIO
 
         bet_amounts_win = bet_win * bet_ratio_win
         bet_amounts_place = bet_place * bet_ratio_place
