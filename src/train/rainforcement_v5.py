@@ -485,7 +485,15 @@ class MultiRaceEnvContinuous(gym.Env):
 
         return obs, float(reward), terminated, truncated, {}
 
-def evaluate_model(env: MultiRaceEnvContinuous, model):
+def evaluate_model(
+        env: MultiRaceEnvContinuous, 
+        model,
+        capital_reset_threshold=1000,
+        capital_reset_value=5000):
+
+    # 評価用の一時的な所持金
+    capital = env.initial_capital
+
     original_ids = env.race_ids
     cost_sum = 0.0
     profit_sum = 0.0
@@ -552,6 +560,14 @@ def evaluate_model(env: MultiRaceEnvContinuous, model):
                     "bet_amount_win": bet_amounts_win[i],
                     "bet_amount_place": bet_amounts_place[i]
                 })
+
+        # 賭け金を差し引き、払戻しを上乗せ
+        capital -= race_cost
+        capital += race_profit
+
+        # 所持金が閾値より下がったらリセット
+        if capital < capital_reset_threshold:
+            capital = capital_reset_value
 
         cost_sum += race_cost
         profit_sum += race_profit
