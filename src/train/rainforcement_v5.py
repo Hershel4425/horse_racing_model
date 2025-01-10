@@ -42,6 +42,40 @@ DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/202501092217
 FEATURE_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
 FUKUSHO_PATH = os.path.join(ROOT_PATH, "data/01_processed/50_odds/odds_df.csv")
 
+
+##### ------------######
+#    設定パラメータ一覧   #
+##### ------------######
+TEST_RATIO = 0.05 # test分割時のtestの割合
+PCA_DIM_HORSE = 50 # 馬情報のpca圧縮次元
+PCA_DIM_JOCKEY = 50 # 騎手情報のpca圧縮次元
+
+COST = 100 # 掛け金の一単位
+TOTAL_TIMESTEPS = 100000 # 学習の総timestep
+RACES_PER_EPISODE = 16 # 1エピソードのレース数
+
+INITIAL_CAPITAL = 10000 # エピソード最初の所持金
+MAX_TOTAL_BET_COST = 1000 # 1レースの最大掛け金
+
+WIN_RATIO = 0.5 # 単勝にかける割合
+PLACE_RATIO = 0.5 # 複勝にかける割合
+
+
+# SACのハイパーパラメータ一覧
+SAC_HYPERPARAMS = {
+        "learning_rate": 3e-4,
+        "buffer_size": 100000,
+        "batch_size": 512,
+        "ent_coef": "auto",
+        "gamma": 0.99,
+        "tau": 0.005,
+        "train_freq": 1,
+        "gradient_steps": 1,
+        "policy_kwargs": dict(
+            net_arch=[256, 256, 128]
+        )
+    }
+
 def split_data(df, id_col="race_id", test_ratio=0.05):
     """
     既存のsplit_data関数を流用
@@ -127,7 +161,7 @@ def prepare_data(
     if single_odds_col in num_cols:
         num_cols.remove(single_odds_col)
     if place_odds_col in num_cols:
-        num_cols.remove(single_odds_col)
+        num_cols.remove(place_odds_col)
 
     for c in num_cols:
         df[c] = df[c].fillna(0)
@@ -239,8 +273,8 @@ class MultiRaceEnvContinuous(gym.Env):
         finishing_col="着順",
         cost=100,
         races_per_episode=16,
-        initial_capital=5000,
-        max_total_bet_cost=1000.0
+        initial_capital=INITIAL_CAPITAL,
+        max_total_bet_cost=MAX_TOTAL_BET_COST
     ):
         """
         - df: レースデータ
@@ -386,8 +420,8 @@ class MultiRaceEnvContinuous(gym.Env):
         total_bet = min(self.max_total_bet_cost, self.capital)
         # 単勝: total_betの半分、複勝: total_betの半分、のように分配する例
         # (調整したい場合は自由にロジックを変更可能)
-        bet_win = total_bet * 0.5
-        bet_place = total_bet * 0.5
+        bet_win = total_bet * WIN_RATIO
+        bet_place = total_bet * PLACE_RATIO
         bet_amounts_win = bet_win * bet_ratio_win
         bet_amounts_place = bet_place * bet_ratio_place
 
@@ -614,9 +648,9 @@ def run_training_and_inference_offpolicy(
     single_odds_col='単勝',
     place_odds_col="複勝",      # ★ 複勝のカラム名を追加
     finishing_col='着順',
-    cost=100,
-    total_timesteps=100000,
-    races_per_episode=16,
+    cost=COST,
+    total_timesteps=TOTAL_TIMESTEPS,
+    races_per_episode=RACES_PER_EPISODE,
     seed_value=42
 ):
     """
@@ -631,12 +665,12 @@ def run_training_and_inference_offpolicy(
         data_path=data_path,
         feature_path=feature_path,
         id_col="race_id",
-        test_ratio=0.05,
+        test_ratio=TEST_RATIO,
         single_odds_col="単勝",
         finishing_col="着順",
         place_odds_col="複勝",      # ★ 複勝のカラム名を追加
-        pca_dim_horse=50,
-        pca_dim_jockey=50
+        pca_dim_horse=PCA_DIM_HORSE,
+        pca_dim_jockey=PCA_DIM_JOCKEY
     )
 
     train_env = MultiRaceEnvContinuous(
@@ -658,24 +692,11 @@ def run_training_and_inference_offpolicy(
 
     # SACアルゴリズム（オフポリシー）を使用
     # 今後複勝を組み込む場合でも、このアルゴリズム設定はほぼ共通で流用可能
-    sac_hyperparams = {
-        "learning_rate": 3e-4,
-        "buffer_size": 100000,
-        "batch_size": 512,
-        "ent_coef": "auto",
-        "gamma": 0.99,
-        "tau": 0.005,
-        "train_freq": 1,
-        "gradient_steps": 1,
-        "policy_kwargs": dict(
-            net_arch=[256, 256, 128]
-        )
-    }
     model = SAC(
         "MlpPolicy",
         env=vec_train_env,
         verbose=1,
-        **sac_hyperparams
+        **SAC_HYPERPARAMS
     )
 
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
