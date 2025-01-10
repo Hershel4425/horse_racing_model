@@ -24,7 +24,6 @@ from matplotlib import rcParams
 rcParams['font.family'] = 'sans-serif'
 rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
-# 今後、単勝だけでなく複勝対応などの拡張を見越して、既存コードを修正・流用しながらオフポリシーSACに切り替える
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -39,6 +38,39 @@ if not os.path.exists(pred_dir):
 
 DATA_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743.csv")
 FEATURE_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
+FUKUSHO_PATH = os.path.join(ROOT_PATH, "data/01_processed/50_odds/odds_df.csv")
+
+
+##### ------------######
+#    設定パラメータ一覧   #
+##### ------------######
+TEST_RATIO = 0.05 # test分割時のtestの割合
+PCA_DIM_HORSE = 50 # 馬情報のpca圧縮次元
+PCA_DIM_JOCKEY = 50 # 騎手情報のpca圧縮次元
+
+COST = 100 # 掛け金の一単位
+TOTAL_TIMESTEPS = 100000 # 学習の総timestep
+RACES_PER_EPISODE = 16 # 1エピソードのレース数
+
+INITIAL_CAPITAL = 10000 # エピソード最初の所持金
+MAX_TOTAL_BET_COST = 1000 # 1レースの最大掛け金
+RESET_THRESHOLD = 500 # test時に所持金をリセットする値
+
+WIN_RATIO = 0.5 # 単勝にかける割合
+PLACE_RATIO = 0.5 # 複勝にかける割合
+
+SAC_HYPERPARAMS = {
+    "learning_rate": 3e-4,
+    "buffer_size": 100000,
+    "batch_size": 512,
+    "ent_coef": "auto",
+    "gamma": 0.99,
+    "tau": 0.005,
+    "train_freq": 1,
+    "gradient_steps": 1,
+    "policy_kwargs": dict(net_arch=[256, 256, 128])
+}
+
 
 def split_data(df, id_col="race_id", test_ratio=0.05):
     """
@@ -48,6 +80,7 @@ def split_data(df, id_col="race_id", test_ratio=0.05):
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
     print(f'total race_id : {dataset_len}')
+
     test_cut = int(dataset_len * (1 - test_ratio))
     train_ids = race_ids[:test_cut]
     test_ids = race_ids[test_cut:]
@@ -57,55 +90,84 @@ def split_data(df, id_col="race_id", test_ratio=0.05):
 
     return train_df, test_df
 
+
 def prepare_data(
     data_path,
     feature_path,
     test_ratio=0.1,
     id_col="race_id",
     single_odds_col="単勝",
+    place_odds_col="複勝",   # ★ 複勝カラム
     finishing_col="着順",
     pca_dim_horse=50,
     pca_dim_jockey=50
 ):
     """
-    既存の前処理関数を流用
+    前処理＆ train/test split を行う関数。
     """
     df1 = pd.read_csv(feature_path, encoding='utf-8-sig')
     df2 = pd.read_csv(data_path, encoding='utf-8-sig')
+    fukusho_df = pd.read_csv(FUKUSHO_PATH, encoding='utf-8-sig')
+    fukusho_df = fukusho_df.rename(columns={'馬番1': '馬番'})
+    fukusho_df = fukusho_df.loc[fukusho_df['券種'] == '複勝']
+    # 複勝を倍率で扱うために 100 で割る
+    fukusho_df["複勝"] = fukusho_df["払戻金額"] / 100.0
+
+    # df2 に複勝列をマージ
+    df_temp = pd.merge(
+        df2,
+        fukusho_df[["race_id", "馬番", "複勝"]],
+        on=["race_id", "馬番"],
+        how="left"
+    )
+    # feature.csv(df1) とマージ
     df = pd.merge(
         df1,
-        df2[["race_id", "馬番", "P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5"]],
+        df_temp[["race_id", "馬番", "P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5", "複勝"]],
         on=["race_id", "馬番"],
         how="inner"
     )
 
+    # NaN埋め
+    df["複勝"] = df["複勝"].fillna(0.0)
+
     default_leakage_cols = [
-        '斤量','タイム','着差','上がり3F','馬体重','人気','horse_id','jockey_id','trainer_id','順位点',
-        '入線','1着タイム差','先位タイム差','5着着差','増減','1C通過順位','2C通過順位','3C通過順位',
-        '4C通過順位','賞金','前半ペース','後半ペース','ペース','上がり3F順位','100m','200m','300m',
+        '斤量','タイム','着差','上がり3F','馬体重','人気',
+        'horse_id','jockey_id','trainer_id',
+        '順位点',
+        '入線','1着タイム差','先位タイム差','5着着差','増減',
+        '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金',
+        '前半ペース','後半ペース','ペース','上がり3F順位',
+        '100m','200m','300m',
         '400m','500m','600m','700m','800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
         '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m','2400m','2500m','2600m',
-        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m','horse_ability'
+        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m',
+        'horse_ability'
     ]
     df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
-    # 馬名をコード化しないように、別列に退避しておく
-    df["馬名"+"_raw"] = df["馬名"].astype(str)
+    # 馬名を退避
+    df["馬名_raw"] = df["馬名"].astype(str)
 
+    # 数値列 / カテゴリ列
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
     if finishing_col in num_cols:
         num_cols.remove(finishing_col)
-    # if single_odds_col in num_cols:
-    #     num_cols.remove(single_odds_col)
+    if single_odds_col in num_cols:
+        num_cols.remove(single_odds_col)
+    if place_odds_col in num_cols:
+        num_cols.remove(place_odds_col)
 
     for c in num_cols:
         df[c] = df[c].fillna(0)
     for c in cat_cols:
         df[c] = df[c].fillna("missing").astype(str)
 
+    # train/test split
     train_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio)
 
+    # PCA対象の列抽出
     pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
     pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
 
@@ -117,6 +179,7 @@ def prepare_data(
         and c not in pca_jockey_target_cols
     ]
 
+    # --- horse系PCA ---
     scaler_horse = StandardScaler()
     if len(pca_horse_target_cols) > 0:
         horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
@@ -134,6 +197,7 @@ def prepare_data(
         horse_train_pca = horse_train_scaled
         horse_test_pca = horse_test_scaled
 
+    # --- jockey系PCA ---
     scaler_jockey = StandardScaler()
     if len(pca_jockey_target_cols) > 0:
         jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
@@ -151,6 +215,7 @@ def prepare_data(
         jockey_train_pca = jockey_train_scaled
         jockey_test_pca = jockey_test_scaled
 
+    # --- other数値 ---
     scaler_other = StandardScaler()
     if len(other_num_cols) > 0:
         other_train = scaler_other.fit_transform(train_df[other_num_cols])
@@ -159,6 +224,7 @@ def prepare_data(
         other_train = np.zeros((len(train_df), 0))
         other_test = np.zeros((len(test_df), 0))
 
+    # カテゴリ列をエンコード
     for c in cat_cols:
         train_df[c] = train_df[c].astype('category')
         test_df[c] = test_df[c].astype('category')
@@ -187,6 +253,7 @@ def prepare_data(
     test_df["X"] = list(X_test)
 
     dim = X_train.shape[1]
+
     return train_df, test_df, dim
 
 class MultiRaceEnvContinuous(gym.Env):
@@ -208,8 +275,8 @@ class MultiRaceEnvContinuous(gym.Env):
         finishing_col="着順",
         cost=100,
         races_per_episode=16,
-        initial_capital=10000,
-        max_total_bet_cost=1000.0
+        initial_capital=INITIAL_CAPITAL,
+        max_total_bet_cost=MAX_TOTAL_BET_COST
     ):
         """
         - df: レースデータ
@@ -363,6 +430,7 @@ class MultiRaceEnvContinuous(gym.Env):
         if race_cost > 0:
             ratio = (race_profit - race_cost) / race_cost
             ratio_clamped = max(ratio, -0.99)  # -1よりは少し上(-0.99など)を下限に設定
+            ratio_clamped = min(ratio_clamped, 10)  # 最大値を20に設定
             # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
             reward = np.log1p(ratio_clamped)
         else:
@@ -393,8 +461,8 @@ class MultiRaceEnvContinuous(gym.Env):
 def evaluate_model(
         env: MultiRaceEnvContinuous, 
         model,
-        capital_reset_threshold=1000,
-        capital_reset_value=5000):
+        capital_reset_threshold=RESET_THRESHOLD,
+        capital_reset_value=INITIAL_CAPITAL):
     """
     学習後のモデルを全レースに適用してROIを計算。
     もし所持金が一定額を下回った場合、所持金を指定額にリセットする。
@@ -564,9 +632,9 @@ def run_training_and_inference_offpolicy(
     horse_name_col='馬名',
     single_odds_col='単勝',
     finishing_col='着順',
-    cost=100,
-    total_timesteps=1000000,
-    races_per_episode=16,
+    cost=COST,
+    total_timesteps=TOTAL_TIMESTEPS,
+    races_per_episode=RACES_PER_EPISODE,
     seed_value=42
 ):
     """
@@ -581,11 +649,12 @@ def run_training_and_inference_offpolicy(
         data_path=data_path,
         feature_path=feature_path,
         id_col="race_id",
-        test_ratio=0.05,
+        test_ratio=TEST_RATIO,
         single_odds_col="単勝",
+        place_odds_col="複勝",   # ★ 複勝カラム
         finishing_col="着順",
-        pca_dim_horse=50,
-        pca_dim_jockey=50
+        pca_dim_horse=PCA_DIM_HORSE,
+        pca_dim_jockey=PCA_DIM_JOCKEY
     )
 
     train_env = MultiRaceEnvContinuous(
@@ -606,24 +675,11 @@ def run_training_and_inference_offpolicy(
 
     # SACアルゴリズム（オフポリシー）を使用
     # 今後複勝を組み込む場合でも、このアルゴリズム設定はほぼ共通で流用可能
-    sac_hyperparams = {
-        "learning_rate": 3e-4,
-        "buffer_size": 100000,
-        "batch_size": 512,
-        "ent_coef": "auto",
-        "gamma": 0.99,
-        "tau": 0.005,
-        "train_freq": 1,
-        "gradient_steps": 1,
-        "policy_kwargs": dict(
-            net_arch=[256, 256, 128]
-        )
-    }
     model = SAC(
         "MlpPolicy",
         env=vec_train_env,
         verbose=1,
-        **sac_hyperparams
+        **SAC_HYPERPARAMS
     )
 
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
@@ -695,7 +751,7 @@ def run_training_and_inference_offpolicy(
     plt.show()
 
     plt.figure(figsize=(10, 6))
-    plt.hist(train_race_agg["race_roi"], bins=50, edgecolor="black")
+    plt.hist(train_race_agg["race_roi"], bins=500, edgecolor="black")
     plt.title("【Train】レース単位の回収率ヒストグラム")
     plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
     plt.ylabel("レース件数")
@@ -716,7 +772,7 @@ def run_training_and_inference_offpolicy(
     plt.show()
 
     plt.figure(figsize=(10, 6))
-    plt.hist(test_race_agg["race_roi"], bins=50, edgecolor="black")
+    plt.hist(test_race_agg["race_roi"], bins=500, edgecolor="black")
     plt.title("【Test】レース単位の回収率ヒストグラム")
     plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
     plt.ylabel("レース件数")
