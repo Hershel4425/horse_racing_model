@@ -3,7 +3,6 @@ import re
 import datetime
 import random
 from tqdm import tqdm
-import pickle
 
 import numpy as np
 import pandas as pd
@@ -724,9 +723,10 @@ def run_training_and_inference_offpolicy(
     plt.tight_layout()
     plt.show()
 
-        # モデル保存
-    with open(MODEL_SAVE_DIR + '/model.pickle', 'wb') as f:
-        pickle.dump(model, f)
+    # モデル保存
+    # stable-baselines3 の標準的な保存形式(model.zip)を使う方が安全です。
+    model_save_path = os.path.join(MODEL_SAVE_DIR, "model.zip")
+    model.save(model_save_path)
 
 if __name__ == "__main__":
     run_training_and_inference_offpolicy()

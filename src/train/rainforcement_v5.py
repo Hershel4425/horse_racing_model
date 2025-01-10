@@ -3,7 +3,6 @@ import re
 import datetime
 import random
 from tqdm import tqdm
-import pickle
 
 import numpy as np
 import pandas as pd
@@ -25,7 +24,6 @@ from matplotlib import rcParams
 rcParams['font.family'] = 'sans-serif'
 rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
-# 今後、単勝だけでなく複勝対応などの拡張を見越して、既存コードを修正・流用しながらオフポリシーSACに切り替える
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -60,21 +58,18 @@ MAX_TOTAL_BET_COST = 1000 # 1レースの最大掛け金
 WIN_RATIO = 0.5 # 単勝にかける割合
 PLACE_RATIO = 0.5 # 複勝にかける割合
 
-
-# SACのハイパーパラメータ一覧
 SAC_HYPERPARAMS = {
-        "learning_rate": 3e-4,
-        "buffer_size": 100000,
-        "batch_size": 512,
-        "ent_coef": "auto",
-        "gamma": 0.99,
-        "tau": 0.005,
-        "train_freq": 1,
-        "gradient_steps": 1,
-        "policy_kwargs": dict(
-            net_arch=[256, 256, 128]
-        )
-    }
+    "learning_rate": 3e-4,
+    "buffer_size": 100000,
+    "batch_size": 512,
+    "ent_coef": "auto",
+    "gamma": 0.99,
+    "tau": 0.005,
+    "train_freq": 1,
+    "gradient_steps": 1,
+    "policy_kwargs": dict(net_arch=[256, 256, 128])
+}
+
 
 def split_data(df, id_col="race_id", test_ratio=0.05):
     """
@@ -94,37 +89,37 @@ def split_data(df, id_col="race_id", test_ratio=0.05):
 
     return train_df, test_df
 
+
 def prepare_data(
     data_path,
     feature_path,
     test_ratio=0.1,
     id_col="race_id",
     single_odds_col="単勝",
-    place_odds_col="複勝",      # ★ 複勝のカラム名を追加
+    place_odds_col="複勝",   # ★ 複勝カラム
     finishing_col="着順",
     pca_dim_horse=50,
     pca_dim_jockey=50
 ):
     """
-    既存の前処理関数を流用
+    前処理＆ train/test split を行う関数。
     """
     df1 = pd.read_csv(feature_path, encoding='utf-8-sig')
     df2 = pd.read_csv(data_path, encoding='utf-8-sig')
-    # ★複勝専用のデータフレームを読み込み
     fukusho_df = pd.read_csv(FUKUSHO_PATH, encoding='utf-8-sig')
-    fukusho_df = fukusho_df.rename(columns = {'馬番1':'馬番'})
-    fukusho_df = fukusho_df.loc[fukusho_df['券種']=='複勝']
+    fukusho_df = fukusho_df.rename(columns={'馬番1': '馬番'})
+    fukusho_df = fukusho_df.loc[fukusho_df['券種'] == '複勝']
     # 複勝を倍率で扱うために 100 で割る
     fukusho_df["複勝"] = fukusho_df["払戻金額"] / 100.0
 
-    # まずは df2 に複勝列をマージ (単勝+複勝を同じ表に)
+    # df2 に複勝列をマージ
     df_temp = pd.merge(
-        df2, 
-        fukusho_df[["race_id","馬番","複勝"]],
-        on=["race_id","馬番"],
-        how="left"  # 複勝が無い場合は NaN になる
+        df2,
+        fukusho_df[["race_id", "馬番", "複勝"]],
+        on=["race_id", "馬番"],
+        how="left"
     )
-    # これまで通り feature.csv(df1) とマージ
+    # feature.csv(df1) とマージ
     df = pd.merge(
         df1,
         df_temp[["race_id", "馬番", "P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5", "複勝"]],
@@ -132,9 +127,8 @@ def prepare_data(
         how="inner"
     )
 
-    # もしNaNが入っていれば 0.0 などで埋める
+    # NaN埋め
     df["複勝"] = df["複勝"].fillna(0.0)
-
 
     default_leakage_cols = [
         '斤量','タイム','着差','上がり3F','馬体重','人気',
@@ -151,9 +145,10 @@ def prepare_data(
     ]
     df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
-    # 馬名をコード化しないように、別列に退避しておく
-    df["馬名"+"_raw"] = df["馬名"].astype(str)
+    # 馬名を退避
+    df["馬名_raw"] = df["馬名"].astype(str)
 
+    # 数値列 / カテゴリ列
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
     if finishing_col in num_cols:
@@ -168,8 +163,10 @@ def prepare_data(
     for c in cat_cols:
         df[c] = df[c].fillna("missing").astype(str)
 
+    # train/test split
     train_df, test_df = split_data(df, id_col=id_col, test_ratio=test_ratio)
 
+    # PCA対象の列抽出
     pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
     pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
 
@@ -181,6 +178,7 @@ def prepare_data(
         and c not in pca_jockey_target_cols
     ]
 
+    # --- horse系PCA ---
     scaler_horse = StandardScaler()
     if len(pca_horse_target_cols) > 0:
         horse_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols])
@@ -198,6 +196,7 @@ def prepare_data(
         horse_train_pca = horse_train_scaled
         horse_test_pca = horse_test_scaled
 
+    # --- jockey系PCA ---
     scaler_jockey = StandardScaler()
     if len(pca_jockey_target_cols) > 0:
         jockey_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols])
@@ -215,6 +214,7 @@ def prepare_data(
         jockey_train_pca = jockey_train_scaled
         jockey_test_pca = jockey_test_scaled
 
+    # --- other数値 ---
     scaler_other = StandardScaler()
     if len(other_num_cols) > 0:
         other_train = scaler_other.fit_transform(train_df[other_num_cols])
@@ -223,6 +223,7 @@ def prepare_data(
         other_train = np.zeros((len(train_df), 0))
         other_test = np.zeros((len(test_df), 0))
 
+    # カテゴリ列をエンコード
     for c in cat_cols:
         train_df[c] = train_df[c].astype('category')
         test_df[c] = test_df[c].astype('category')
@@ -251,13 +252,24 @@ def prepare_data(
     test_df["X"] = list(X_test)
 
     dim = X_train.shape[1]
+
     return train_df, test_df, dim
+
+
+def get_max_horses_for_env(train_df, test_df, id_col="race_id"):
+    """
+    train_df と test_df の両方を見て、最大頭数を求める。
+    """
+    # レースIDごとに何頭いるかカウント
+    train_size = train_df.groupby(id_col).size().max()
+    test_size = test_df.groupby(id_col).size().max()
+    return max(train_size, test_size)
+
 
 class MultiRaceEnvContinuous(gym.Env):
     """
-    オフポリシーを前提とした連続アクション空間対応の強化学習環境サンプル。
-    今後は単勝・複勝など複数の賭け方を扱う拡張が想定されるため、
-    行動空間を連続値として設計（bet率や馬ごとの配分を連続値で指定）にしている。
+    連続アクション空間対応の強化学習環境。
+    単勝 & 複勝を想定しており、アクションベクトルの前半を単勝ベット、後半を複勝ベットに対応。
     """
     metadata = {"render_modes": []}
 
@@ -269,27 +281,21 @@ class MultiRaceEnvContinuous(gym.Env):
         horse_col="馬番",
         horse_name_col="馬名",
         single_odds_col="単勝",
-        place_odds_col="複勝",      # ★ 複勝のカラム名を追加
+        place_odds_col="複勝",
         finishing_col="着順",
         cost=100,
         races_per_episode=16,
         initial_capital=INITIAL_CAPITAL,
-        max_total_bet_cost=MAX_TOTAL_BET_COST
+        max_total_bet_cost=MAX_TOTAL_BET_COST,
+        max_horses=None
     ):
-        """
-        - df: レースデータ
-        - feature_dim: 特徴量次元
-        - cost: 一単位ベットのコスト
-        - max_total_bet_cost: 1レースに賭けられる最大総額
-        今後、複勝用の払い戻し計算を拡張しやすいように馬ごとの情報を整理しやすい形に構成する。
-        """
         super().__init__()
         self.df = df
         self.id_col = id_col
         self.horse_col = horse_col
         self.horse_name_col = horse_name_col
         self.single_odds_col = single_odds_col
-        self.place_odds_col = place_odds_col  # ★
+        self.place_odds_col = place_odds_col
         self.finishing_col = finishing_col
         self.cost = cost
         self.feature_dim = feature_dim
@@ -299,13 +305,21 @@ class MultiRaceEnvContinuous(gym.Env):
 
         self.race_ids = df[id_col].unique().tolist()
         self.race_map = {}
-        self.max_horses = 0
+        # ---- ここで「最大頭数」固定 ----
+        if max_horses is not None:
+            self.max_horses = max_horses
+        else:
+            # df 内での最大頭数を計算
+            self.max_horses = 0
+            for rid in self.race_ids:
+                subdf = df[df[id_col] == rid]
+                self.max_horses = max(self.max_horses, len(subdf))
+
         for rid in self.race_ids:
             subdf = df[df[id_col] == rid].copy().sort_values(self.horse_col)
-            self.max_horses = max(self.max_horses, len(subdf))
             self.race_map[rid] = subdf
-        
-        # 観測空間: max_horses頭 × feature_dim + 所持金1次元
+
+        # 観測次元 = max_horses * feature_dim + 1(所持金)
         obs_dim = self.max_horses * self.feature_dim + 1
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -314,10 +328,7 @@ class MultiRaceEnvContinuous(gym.Env):
             dtype=np.float32
         )
 
-        # 行動空間:
-        # 例: 各馬のactionは[0.0 ~ 1.0]で、総和<=1.0に正規化する運用など
-        # ここでは簡単に [-1,1] を馬ごとに出す形にしておき、後ほど正規化して賭け金を計算
-        # ★ アクション空間を 2倍に (単勝 + 複勝)
+        # アクション次元 = 2 * max_horses (単勝 + 複勝)
         self.action_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -333,7 +344,7 @@ class MultiRaceEnvContinuous(gym.Env):
 
     def _get_obs_for_race(self, race_df: pd.DataFrame):
         """
-        レース内の馬の特徴量をflattenし、所持金を追加。
+        レース内の馬の特徴量を flatten() して所持金を追加。
         """
         n_horses = len(race_df)
         feats = []
@@ -341,44 +352,34 @@ class MultiRaceEnvContinuous(gym.Env):
             feats.append(race_df.iloc[i]["X"])
         feats = np.array(feats, dtype=np.float32)
 
+        # 足りない頭数分をゼロパディング
         if n_horses < self.max_horses:
             pad_len = self.max_horses - n_horses
             pad = np.zeros((pad_len, self.feature_dim), dtype=np.float32)
             feats = np.vstack([feats, pad])
 
+        # flatten & 所持金を末尾に追加
         feats = feats.flatten()
         feats_with_capital = np.concatenate([feats, [self.capital]], axis=0)
         return feats_with_capital
 
     def _select_races_for_episode(self):
-        """
-        1エピソードで使用するレースをランダムにシャッフル。
-        今後、複勝ベースのタスクと併用する場合にも同様のロジックを流用可能。
-        """
         self.sampled_races = random.sample(self.race_ids, k=self.races_per_episode)
         random.shuffle(self.sampled_races)
 
     def reset(self, seed=None, options=None):
-        """
-        エピソード開始時に呼ばれる。
-        各種状態を初期化し、最初のレースを返す。
-        """
         super().reset(seed=seed)
         self._select_races_for_episode()
         self.current_race_idx = 0
         self.terminated = False
         self.capital = self.initial_capital
+
         rid = self.sampled_races[self.current_race_idx]
         race_df = self.race_map[rid]
         self.current_obs = self._get_obs_for_race(race_df)
         return self.current_obs, {}
 
     def step(self, action):
-        """
-        連続アクションで受け取ったベット配分を基に、
-        単勝の払い戻しを計算して次状態に進む。
-        今後の複勝計算拡張時に、ここで複勝払い戻しロジックを追加してもよい。
-        """
         if self.terminated:
             return self.current_obs, 0.0, True, False, {}
 
@@ -386,27 +387,22 @@ class MultiRaceEnvContinuous(gym.Env):
         race_df = self.race_map[rid]
         n_horses = len(race_df)
 
-        # ★ アクションを前半(単勝)・後半(複勝)に分割
-        # action.shape == (2 * max_horses,)
+        # アクションを前半(単勝)・後半(複勝)に分割
         half = self.max_horses
         win_action_raw = action[:half]
         place_action_raw = action[half:]
 
-        # 行動を [0,1] に正規化 -> ベット配分率に変換
-        ## 1) アクションを [0, 1] にクリップ
-        # クリップして [0,1] に
+        # 1) まず clip [0,1]
         win_action = np.clip(win_action_raw, 0.0, 1.0)
         place_action = np.clip(place_action_raw, 0.0, 1.0)
 
-        # 2) bet_amountが大きい上位3頭を選択
-        #   -> ソートして最後の3つを上位とみなす (3頭未満なら全頭を賭け対象)
-        top_k_win = min(1, n_horses)
-        top_k_place = min(3, n_horses)
+        # 2) ソートして上位を取る
+        top_k_win = min(1, n_horses)   # 例: 単勝はトップ1頭
+        top_k_place = min(3, n_horses) # 例: 複勝はトップ3頭
         idx_top_win = np.argsort(win_action)[-top_k_win:]
         idx_top_place = np.argsort(place_action)[-top_k_place:]
 
-        # 3) 選択された上位馬の合計アクション値でベット配分を正規化
-        # 合計値で正規化 (単勝と複勝は別々にスケール)
+        # 3) 上位馬の合計値で正規化
         sum_win = np.sum(win_action)
         sum_place = np.sum(place_action)
         bet_ratio_win = np.zeros_like(win_action)
@@ -416,55 +412,47 @@ class MultiRaceEnvContinuous(gym.Env):
         if sum_place > 0:
             bet_ratio_place[idx_top_place] = place_action[idx_top_place] / sum_place
 
-        # 4) 今回は単勝・複勝の合計BET額が「max_total_bet_cost」か所持金の小さい方まで
+        # 4) 賭け可能総額
         total_bet = min(self.max_total_bet_cost, self.capital)
-        # 単勝: total_betの半分、複勝: total_betの半分、のように分配する例
-        # (調整したい場合は自由にロジックを変更可能)
         bet_win = total_bet * WIN_RATIO
         bet_place = total_bet * PLACE_RATIO
+
         bet_amounts_win = bet_win * bet_ratio_win
         bet_amounts_place = bet_place * bet_ratio_place
 
-        # cost単位に丸める
         bet_amounts_win = np.floor(bet_amounts_win / self.cost) * self.cost
         bet_amounts_place = np.floor(bet_amounts_place / self.cost) * self.cost
+
         race_cost = np.sum(bet_amounts_win) + np.sum(bet_amounts_place)
         self.capital -= race_cost
 
-        # 5) 単勝複勝での払戻額を計算
+        # 払戻計算
         race_profit_win = 0.0
         race_profit_place = 0.0
-        race_profit = 0.0
         for i in range(self.max_horses):
             if i < n_horses:
                 row = race_df.iloc[i]
                 finishing = row[self.finishing_col]
-                
-                # 単勝(1着なら的中)
+
+                # 単勝的中
                 if finishing == 1:
                     race_profit_win += bet_amounts_win[i] * row[self.single_odds_col]
-                
-                # 複勝(3着以内なら的中とみなす例)
-                # ※ 場合によっては "着順<=2" にしたり、地方競馬でルールが違う場合は変更してください
+                # 複勝的中(着順<=3 例)
                 if finishing <= 3:
                     race_profit_place += bet_amounts_place[i] * row[self.place_odds_col]
 
         race_profit = race_profit_win + race_profit_place
-
-        # 6) 所持金を更新
         self.capital += race_profit
-        
-        # 7) 報酬: 「(race_profit / race_cost)」を対数スケーリングして過剰フィットを緩和
-        #   (ベット額0のときは0報酬に)
+
+        # 報酬計算 (log(1 + 利益率)) など
         if race_cost > 0:
             ratio = (race_profit - race_cost) / race_cost
-            ratio_clamped = max(ratio, -0.99)  # -1よりは少し上(-0.99など)を下限に設定
-            # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
+            ratio_clamped = max(ratio, -0.99)
             reward = np.log1p(ratio_clamped)
         else:
             reward = 0.0
 
-        # 追加: race_costが100未満のときにペナルティ
+        # 追加ペナルティ例: ベットが少なすぎる場合
         if race_cost < 100:
             reward -= 0.1
 
@@ -472,7 +460,6 @@ class MultiRaceEnvContinuous(gym.Env):
         terminated = (self.current_race_idx >= self.races_per_episode)
         if self.capital <= 500:
             terminated = True
-
         self.terminated = terminated
         truncated = False
 
@@ -486,13 +473,17 @@ class MultiRaceEnvContinuous(gym.Env):
 
         return obs, float(reward), terminated, truncated, {}
 
+
 def evaluate_model(
-        env: MultiRaceEnvContinuous, 
+        env: MultiRaceEnvContinuous,
         model,
         capital_reset_threshold=MAX_TOTAL_BET_COST,
-        capital_reset_value=INITIAL_CAPITAL):
-
-    # 評価用の一時的な所持金
+        capital_reset_value=INITIAL_CAPITAL
+):
+    """
+    学習済みモデルで全レースを通し推論し、ROIを計算。馬券ごとの結果を DataFrame で返す。
+    """
+    # 評価用に別途キャピタルを用意して試算する想定
     capital = env.initial_capital
 
     original_ids = env.race_ids
@@ -502,25 +493,31 @@ def evaluate_model(
 
     for rid in tqdm(original_ids):
         subdf = env.race_map[rid].sort_values(env.horse_col).reset_index(drop=True)
+        # 環境に合わせたサイズにパディングした観測を得る
         obs = env._get_obs_for_race(subdf)
 
-        action, _ = model.predict(obs, deterministic=True)
-        # 前半: 単勝, 後半: 複勝
+        # SB3モデルのpredictは (n_env, obs_dim) の shape を期待する場合が多いので
+        # 1次元 -> (1, obs_dim) に reshape してから予測
+        action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+        # 返ってくる action も (1, 2*self.max_horses) なので squeeze
+        action = action.squeeze(0)
+
         half = env.max_horses
         win_action_raw = action[:half]
         place_action_raw = action[half:]
-        
+
+        # まず clip
         win_action = np.clip(win_action_raw, 0.0, 1.0)
         place_action = np.clip(place_action_raw, 0.0, 1.0)
-        
+
         n_horses = len(subdf)
         top_k = min(3, n_horses)
-        idx_top_win = np.argsort(win_action)[-top_k:]
+        idx_top_win = np.argsort(win_action)[-1:]   # 単勝 1頭
         idx_top_place = np.argsort(place_action)[-top_k:]
-        
+
         sum_win = np.sum(win_action)
         sum_place = np.sum(place_action)
-        
+
         bet_ratio_win = np.zeros_like(win_action)
         bet_ratio_place = np.zeros_like(place_action)
         if sum_win > 0:
@@ -528,29 +525,35 @@ def evaluate_model(
         if sum_place > 0:
             bet_ratio_place[idx_top_place] = place_action[idx_top_place] / sum_place
 
-        total_bet = min(env.max_total_bet_cost, env.capital)
+        total_bet = min(env.max_total_bet_cost, capital)
         bet_win = total_bet * WIN_RATIO
         bet_place = total_bet * PLACE_RATIO
 
         bet_amounts_win = bet_win * bet_ratio_win
         bet_amounts_place = bet_place * bet_ratio_place
-        
+
         bet_amounts_win = np.floor(bet_amounts_win / env.cost) * env.cost
         bet_amounts_place = np.floor(bet_amounts_place / env.cost) * env.cost
-        
+
         race_cost = np.sum(bet_amounts_win) + np.sum(bet_amounts_place)
         race_profit = 0.0
 
+        # 各馬の bet_amount_win, bet_amount_place を記録するために回す
         for i in range(env.max_horses):
             if i < n_horses:
                 row = subdf.iloc[i]
                 finishing = row[env.finishing_col]
+
+                # 払戻
+                single_hit = 0.0
+                place_hit = 0.0
                 if finishing == 1:
-                    race_profit += bet_amounts_win[i] * row[env.single_odds_col]
+                    single_hit = bet_amounts_win[i] * row[env.single_odds_col]
                 if finishing <= 3:
-                    race_profit += bet_amounts_place[i] * row[env.place_odds_col]
-                
-                # 結果保存
+                    place_hit = bet_amounts_place[i] * row[env.place_odds_col]
+                race_profit += single_hit + place_hit
+
+                # 保存
                 results.append({
                     "race_id": rid,
                     "馬番": row[env.horse_col],
@@ -559,14 +562,14 @@ def evaluate_model(
                     "単勝": row[env.single_odds_col],
                     "複勝": row[env.place_odds_col],
                     "bet_amount_win": bet_amounts_win[i],
-                    "bet_amount_place": bet_amounts_place[i]
+                    "bet_amount_place": bet_amounts_place[i],
                 })
 
-        # 賭け金を差し引き、払戻しを上乗せ
+        # 所持金更新
         capital -= race_cost
         capital += race_profit
 
-        # 所持金が閾値より下がったらリセット
+        # 閾値より下がったらリセット
         if capital < capital_reset_threshold:
             capital = capital_reset_value
 
@@ -574,12 +577,13 @@ def evaluate_model(
         profit_sum += race_profit
 
     roi = (profit_sum / cost_sum) if cost_sum > 0 else 0.0
-    return roi, pd.DataFrame(results)
+    df_out = pd.DataFrame(results)
+    return roi, df_out
+
 
 class OffPolicyStatsCallback(BaseCallback):
     """
-    SACやTD3の学習中の統計を収集するコールバック。
-    PPO時のStatsCallbackを流用。
+    SACやTD3の学習中にロスなどを拾うためのコールバック。
     """
     def __init__(self):
         super().__init__(verbose=0)
@@ -587,8 +591,6 @@ class OffPolicyStatsCallback(BaseCallback):
             "iteration": [],
             "timesteps": [],
             "time_elapsed": [],
-            "train_reward": [],
-            # 追加: actor_loss / critic_loss を格納するリスト
             "actor_loss": [],
             "critic_loss": []
         }
@@ -601,53 +603,43 @@ class OffPolicyStatsCallback(BaseCallback):
         pass
 
     def _on_rollout_end(self):
-        """
-        SAC/TD3ではrolloutが終わるたびに呼ばれるので、このタイミングでロスを拾う。
-        """
         self.iter_count += 1
         self.iteration_logs["iteration"].append(self.iter_count)
         self.iteration_logs["timesteps"].append(self.model.num_timesteps)
 
-        # SB3 の logger に格納された値を取得:
+        # SB3 の logger から値を取得
         self.iteration_logs["time_elapsed"].append(
             self.model.logger.name_to_value.get("time/total_timesteps", 0)
         )
-        # actor_loss / critic_loss を取得 (ない場合は None が返るので np.nan に変換)
         actor_loss = self.model.logger.name_to_value.get("train/actor_loss")
         critic_loss = self.model.logger.name_to_value.get("train/critic_loss")
-        self.iteration_logs["actor_loss"].append(actor_loss if actor_loss is not None else np.nan)
-        self.iteration_logs["critic_loss"].append(critic_loss if critic_loss is not None else np.nan)
-
-        # もし他に報酬情報などを追う場合は合わせて記録する
+        import math
+        self.iteration_logs["actor_loss"].append(actor_loss if actor_loss is not None else math.nan)
+        self.iteration_logs["critic_loss"].append(critic_loss if critic_loss is not None else math.nan)
 
     def plot_logs(self):
-        """
-        ログを可視化。
-        actor_loss / critic_loss を追加で可視化するため、2行×2列に変更。
-        """
         logs = self.iteration_logs
-
         fig, axs = plt.subplots(2, 2, figsize=(12, 8))
 
-        # 1段目左: timesteps
+        # timesteps
         axs[0, 0].plot(logs["iteration"], logs["timesteps"], marker='o', label="timesteps")
         axs[0, 0].set_xlabel("iteration")
         axs[0, 0].set_ylabel("timesteps")
         axs[0, 0].legend()
 
-        # 1段目右: time/total_timesteps
+        # time/total_timesteps
         axs[0, 1].plot(logs["iteration"], logs["time_elapsed"], marker='o', label="time/total_timesteps")
         axs[0, 1].set_xlabel("iteration")
         axs[0, 1].set_ylabel("time/total_timesteps")
         axs[0, 1].legend()
 
-        # 2段目左: actor_loss
+        # actor_loss
         axs[1, 0].plot(logs["iteration"], logs["actor_loss"], marker='o', color='red', label="actor_loss")
         axs[1, 0].set_xlabel("iteration")
         axs[1, 0].set_ylabel("actor_loss")
         axs[1, 0].legend()
 
-        # 2段目右: critic_loss
+        # critic_loss
         axs[1, 1].plot(logs["iteration"], logs["critic_loss"], marker='o', color='blue', label="critic_loss")
         axs[1, 1].set_xlabel("iteration")
         axs[1, 1].set_ylabel("critic_loss")
@@ -656,6 +648,7 @@ class OffPolicyStatsCallback(BaseCallback):
         plt.tight_layout()
         plt.show()
 
+
 def run_training_and_inference_offpolicy(
     data_path=DATA_PATH,
     feature_path=FEATURE_PATH,
@@ -663,33 +656,34 @@ def run_training_and_inference_offpolicy(
     horse_col='馬番',
     horse_name_col='馬名',
     single_odds_col='単勝',
-    place_odds_col="複勝",      # ★ 複勝のカラム名を追加
+    place_odds_col="複勝",
     finishing_col='着順',
     cost=COST,
     total_timesteps=TOTAL_TIMESTEPS,
     races_per_episode=RACES_PER_EPISODE,
     seed_value=42
 ):
-    """
-    SACを使ったオフポリシー学習の実行関数。
-    今後、単勝・複勝の拡張を念頭において、同様の構成を複勝に適用できるようコメントを充実させる。
-    """
     set_random_seed(seed_value)
     random.seed(seed_value)
     np.random.seed(seed_value)
 
+    # train/test へ前処理
     train_df, test_df, dim = prepare_data(
         data_path=data_path,
         feature_path=feature_path,
-        id_col="race_id",
+        id_col=id_col,
         test_ratio=TEST_RATIO,
-        single_odds_col="単勝",
-        finishing_col="着順",
-        place_odds_col="複勝",      # ★ 複勝のカラム名を追加
+        single_odds_col=single_odds_col,
+        finishing_col=finishing_col,
+        place_odds_col=place_odds_col,
         pca_dim_horse=PCA_DIM_HORSE,
         pca_dim_jockey=PCA_DIM_JOCKEY
     )
 
+    # train/test 両方を見て最大頭数を算出し、同じ次元の環境を作る
+    global_max_horses = get_max_horses_for_env(train_df, test_df, id_col=id_col)
+
+    # ---- train_env ----
     train_env = MultiRaceEnvContinuous(
         df=train_df,
         feature_dim=dim,
@@ -697,32 +691,29 @@ def run_training_and_inference_offpolicy(
         horse_col=horse_col,
         horse_name_col=horse_name_col,
         single_odds_col=single_odds_col,
-        place_odds_col=place_odds_col,      # ★ 複勝のカラム名を追加
+        place_odds_col=place_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode
+        races_per_episode=races_per_episode,
+        max_horses=global_max_horses  # ここで最大頭数を固定
     )
-
     vec_train_env = DummyVecEnv([lambda: train_env])
 
     stats_callback = OffPolicyStatsCallback()
 
-    # SACアルゴリズム（オフポリシー）を使用
-    # 今後複勝を組み込む場合でも、このアルゴリズム設定はほぼ共通で流用可能
     model = SAC(
         "MlpPolicy",
         env=vec_train_env,
         verbose=1,
         **SAC_HYPERPARAMS
     )
-
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
 
-    # 学習データでのROI
+    # ---- evaluate (train) ----
     train_roi, train_df_out = evaluate_model(train_env, model)
     print(f"Train ROI: {train_roi*100:.2f}%")
 
-    # テストデータでのROI
+    # ---- evaluate (test) ----
     test_env = MultiRaceEnvContinuous(
         df=test_df,
         feature_dim=dim,
@@ -730,47 +721,65 @@ def run_training_and_inference_offpolicy(
         horse_col=horse_col,
         horse_name_col=horse_name_col,
         single_odds_col=single_odds_col,
-        place_odds_col=place_odds_col,      # ★ 複勝のカラム名を追加
+        place_odds_col=place_odds_col,
         finishing_col=finishing_col,
         cost=cost,
-        races_per_episode=races_per_episode
+        races_per_episode=races_per_episode,
+        max_horses=global_max_horses  # テスト環境も同じ最大頭数
     )
     test_roi, test_df_out = evaluate_model(test_env, model)
     print(f"Test ROI: {test_roi*100:.2f}%")
 
+    # 推論結果のCSV書き出し
+    # bet_amount_win + bet_amount_place を合計カラムにしておく
+    test_df_out["bet_amount_total"] = test_df_out["bet_amount_win"] + test_df_out["bet_amount_place"]
+    # 単勝・複勝の的中払い戻しをまとめた payout
+    test_df_out["payout_total"] = 0.0
+    # 1着なら単勝的中
+    cond_single = (test_df_out["着順"] == 1)
+    test_df_out.loc[cond_single, "payout_total"] += (
+        test_df_out.loc[cond_single, "bet_amount_win"] * test_df_out.loc[cond_single, "単勝"]
+    )
+    # 3着以内なら複勝的中(例)
+    cond_place = (test_df_out["着順"] <= 3)
+    test_df_out.loc[cond_place, "payout_total"] += (
+        test_df_out.loc[cond_place, "bet_amount_place"] * test_df_out.loc[cond_place, "複勝"]
+    )
+    # ROI (馬券1件ごとの水準)
+    test_df_out["roi"] = test_df_out.apply(
+        lambda row: (row["payout_total"] / row["bet_amount_total"]) if row["bet_amount_total"] > 0 else 0,
+        axis=1
+    )
     test_df_out.to_csv(SAVE_PATH_PRED, index=False, encoding='utf_8_sig')
 
-    stats_callback.plot_logs()
+    # 可視化用に train_df_out も同様に合計カラムを付与
+    train_df_out["bet_amount_total"] = train_df_out["bet_amount_win"] + train_df_out["bet_amount_place"]
+    train_df_out["payout_total"] = 0.0
+    cond_single_tr = (train_df_out["着順"] == 1)
+    train_df_out.loc[cond_single_tr, "payout_total"] += (
+        train_df_out.loc[cond_single_tr, "bet_amount_win"] * train_df_out.loc[cond_single_tr, "単勝"]
+    )
+    cond_place_tr = (train_df_out["着順"] <= 3)
+    train_df_out.loc[cond_place_tr, "payout_total"] += (
+        train_df_out.loc[cond_place_tr, "bet_amount_place"] * train_df_out.loc[cond_place_tr, "複勝"]
+    )
+    train_df_out["roi"] = train_df_out.apply(
+        lambda row: (row["payout_total"] / row["bet_amount_total"]) if row["bet_amount_total"] > 0 else 0,
+        axis=1
+    )
 
-    # 回収率と掛け金の可視化
-    # まず、train用・test用の結果DataFrameそれぞれに払戻と個別ROI列を追加します。
-    # 例として、すでに evaluate_model(train_env, model) で得られた train_df_out、
-    # evaluate_model(test_env, model) で得られた test_df_out があるものとします。
-    # ここでは train_df_out / test_df_out に "bet_amount", "着順", "単勝" カラムが含まれている想定です。
-
-    # 払戻とROI(1レース1馬券単位)を列追加
-    for df_out in [train_df_out, test_df_out]:
-        df_out["payout"] = df_out.apply(
-            lambda row: row["bet_amount"] * row["単勝"] if row["着順"] == 1 and row["bet_amount"] > 0 else 0,
-            axis=1
-        )
-        df_out["roi"] = df_out.apply(
-            lambda row: (row["payout"] / row["bet_amount"]) if row["bet_amount"] > 0 else 0,
-            axis=1
-        )
-
-    # race_id単位で集計: 賭け金合計、払戻合計、ROI(レース単位)
+    # レース単位の集計
     train_race_agg = train_df_out.groupby("race_id").agg(
-        race_bet_amount=("bet_amount", "sum"),
-        race_payout=("payout", "sum")
+        race_bet_amount=("bet_amount_total", "sum"),
+        race_payout=("payout_total", "sum")
     ).reset_index()
     train_race_agg["race_roi"] = train_race_agg["race_payout"] / (train_race_agg["race_bet_amount"] + 1e-15)
 
     test_race_agg = test_df_out.groupby("race_id").agg(
-        race_bet_amount=("bet_amount", "sum"),
-        race_payout=("payout", "sum")
+        race_bet_amount=("bet_amount_total", "sum"),
+        race_payout=("payout_total", "sum")
     ).reset_index()
-    test_race_agg["race_roi"] = test_race_agg["race_payout"] / (test_race_agg["race_bet_amount"]+ 1e-15)
+    test_race_agg["race_roi"] = test_race_agg["race_payout"] / (test_race_agg["race_bet_amount"] + 1e-15)
 
     # ----------------
     # (1) train用ヒストグラム
@@ -788,7 +797,7 @@ def run_training_and_inference_offpolicy(
     plt.figure(figsize=(10, 6))
     plt.hist(train_race_agg["race_roi"], bins=50, edgecolor="black")
     plt.title("【Train】レース単位の回収率ヒストグラム")
-    plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
+    plt.xlabel("race_roi (払い戻し / 賭け金)")
     plt.ylabel("レース件数")
     plt.tight_layout()
     plt.show()
@@ -809,14 +818,18 @@ def run_training_and_inference_offpolicy(
     plt.figure(figsize=(10, 6))
     plt.hist(test_race_agg["race_roi"], bins=50, edgecolor="black")
     plt.title("【Test】レース単位の回収率ヒストグラム")
-    plt.xlabel("race_roi (払い戻し合計 / 賭け金合計)")
+    plt.xlabel("race_roi (払い戻し / 賭け金)")
     plt.ylabel("レース件数")
     plt.tight_layout()
     plt.show()
 
-    # モデル保存
-    with open(MODEL_SAVE_DIR, 'wb') as f:
-        pickle.dump(model, f)
+    stats_callback.plot_logs()
+
+    # モデルの保存
+    # stable-baselines3 の標準的な保存形式(model.zip)を使う方が安全です。
+    model_save_path = os.path.join(MODEL_SAVE_DIR, "model.zip")
+    model.save(model_save_path)
+
 
 if __name__ == "__main__":
-    run_training_and_inference_offpolicy()
+    run_training_and_inference_offpolicy(total_timesteps=10000)
