@@ -680,10 +680,6 @@ def run_training_and_inference_offpolicy(
 
     model.learn(total_timesteps=total_timesteps, callback=stats_callback)
 
-    # # モデル保存
-    # with open(MODEL_SAVE_DIR, 'wb') as f:
-    #     pickle.dump(model, f)
-
     # 学習データでのROI
     train_roi, train_df_out = evaluate_model(train_env, model)
     print(f"Train ROI: {train_roi*100:.2f}%")
@@ -779,6 +775,10 @@ def run_training_and_inference_offpolicy(
     plt.ylabel("レース件数")
     plt.tight_layout()
     plt.show()
+
+    # モデル保存
+    with open(MODEL_SAVE_DIR, 'wb') as f:
+        pickle.dump(model, f)
 
 if __name__ == "__main__":
     run_training_and_inference_offpolicy()
