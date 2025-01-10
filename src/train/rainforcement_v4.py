@@ -363,8 +363,9 @@ class MultiRaceEnvContinuous(gym.Env):
         #   (ベット額0のときは0報酬に)
         if race_cost > 0:
             ratio = (race_profit - race_cost) / race_cost
+            ratio_clamped = max(ratio, -0.99)  # -1よりは少し上(-0.99など)を下限に設定
             # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
-            reward = np.log1p(ratio)
+            reward = np.log1p(ratio_clamped)
         else:
             reward = 0.0
     
