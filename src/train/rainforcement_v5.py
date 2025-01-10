@@ -488,8 +488,8 @@ class MultiRaceEnvContinuous(gym.Env):
 def evaluate_model(
         env: MultiRaceEnvContinuous, 
         model,
-        capital_reset_threshold=1000,
-        capital_reset_value=5000):
+        capital_reset_threshold=MAX_TOTAL_BET_COST,
+        capital_reset_value=INITIAL_CAPITAL):
 
     # 評価用の一時的な所持金
     capital = env.initial_capital
