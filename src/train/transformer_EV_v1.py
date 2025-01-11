@@ -14,7 +14,6 @@ import matplotlib.pyplot as plt
 import copy
 import pickle
 import random
-from sklearn.calibration import calibration_curve
 
 # 乱数固定(再現性確保)
 random.seed(42)
@@ -432,14 +431,20 @@ def prepare_data_for_ev(
         else:
             return -100
 
-    train_df["EV_tansho"] = train_df.apply(get_tansho_ev, axis=1)
-    train_df["EV_fukusho"] = train_df.apply(get_fukusho_ev, axis=1)
+    train_df = train_df.assign(
+    EV_tansho=train_df.apply(get_tansho_ev, axis=1),
+    EV_fukusho=train_df.apply(get_fukusho_ev, axis=1)
+    )
 
-    valid_df["EV_tansho"] = valid_df.apply(get_tansho_ev, axis=1)
-    valid_df["EV_fukusho"] = valid_df.apply(get_fukusho_ev, axis=1)
+    valid_df = valid_df.assign(
+    EV_tansho=valid_df.apply(get_tansho_ev, axis=1),
+    EV_fukusho=valid_df.apply(get_fukusho_ev, axis=1)
+    )
 
-    test_df["EV_tansho"] = test_df.apply(get_tansho_ev, axis=1)
-    test_df["EV_fukusho"] = test_df.apply(get_fukusho_ev, axis=1)
+    test_df = test_df.assign(
+    EV_tansho=test_df.apply(get_tansho_ev, axis=1),
+    EV_fukusho=test_df.apply(get_fukusho_ev, axis=1)
+    )
 
     # -----------------------------------------------------
     # 5) Sequence化
@@ -596,7 +601,7 @@ def run_training_ev(
      pca_dim_horse, pca_dim_jockey,
      actual_num_dim,
      df_all,
-     _, _, _,
+     _, _, 
      _, _, _,
      scaler_horse, scaler_jockey, scaler_other,
      pca_model_horse, pca_model_jockey,
@@ -818,7 +823,99 @@ def run_training_ev(
 
     print("Model saved.")
 
-    return model, result_df, full_pred_df
+    # 結果の可視化
+    plot_ev_scatter(result_df)
+    calc_positive_ev_gain(result_df)
+    plot_error_distribution(result_df)
+    plot_cumulative_return(result_df, is_tansho=True)   # 単勝
+    plot_cumulative_return(result_df, is_tansho=False)  # 複勝
+
+    return 0
+
+def plot_ev_scatter(result_df):
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12,6))
+
+    # 単勝散布図
+    axes[0].scatter(result_df["true_tansho_ev"], result_df["pred_tansho_ev"], alpha=0.3)
+    axes[0].set_title("Tansho EV: True vs Pred")
+    axes[0].set_xlabel("True Tansho EV")
+    axes[0].set_ylabel("Predicted Tansho EV")
+    # 対角線
+    min_val = min(result_df["true_tansho_ev"].min(), result_df["pred_tansho_ev"].min())
+    max_val = max(result_df["true_tansho_ev"].max(), result_df["pred_tansho_ev"].max())
+    axes[0].plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--')
+
+    # 複勝散布図
+    axes[1].scatter(result_df["true_fukusho_ev"], result_df["pred_fukusho_ev"], alpha=0.3)
+    axes[1].set_title("Fukusho EV: True vs Pred")
+    axes[1].set_xlabel("True Fukusho EV")
+    axes[1].set_ylabel("Predicted Fukusho EV")
+    min_val = min(result_df["true_fukusho_ev"].min(), result_df["pred_fukusho_ev"].min())
+    max_val = max(result_df["true_fukusho_ev"].max(), result_df["pred_fukusho_ev"].max())
+    axes[1].plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--')
+
+    plt.tight_layout()
+    plt.show()
+
+def calc_positive_ev_gain(result_df):
+    # 単勝で予測がプラスの馬
+    df_tansho_positive = result_df[result_df["pred_tansho_ev"] > 0]
+    total_tansho_real = df_tansho_positive["true_tansho_ev"].sum()
+
+    # 複勝で予測がプラスの馬
+    df_fukusho_positive = result_df[result_df["pred_fukusho_ev"] > 0]
+    total_fukusho_real = df_fukusho_positive["true_fukusho_ev"].sum()
+
+    print("【予測EVが+のレコードについて】")
+    print(f"- 単勝: True EV 合計 = {total_tansho_real:.2f}")
+    print(f"- 複勝: True EV 合計 = {total_fukusho_real:.2f}")
+
+def plot_error_distribution(result_df):
+    # 単勝誤差
+    tansho_error = result_df["true_tansho_ev"] - result_df["pred_tansho_ev"]
+    # 複勝誤差
+    fukusho_error = result_df["true_fukusho_ev"] - result_df["pred_fukusho_ev"]
+
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12,5))
+
+    axes[0].hist(tansho_error, bins=50, alpha=0.7, color='b')
+    axes[0].set_title("Tansho EV Residuals (True - Pred)")
+    axes[0].set_xlabel("Residual Value")
+    axes[0].set_ylabel("Count")
+
+    axes[1].hist(fukusho_error, bins=50, alpha=0.7, color='g')
+    axes[1].set_title("Fukusho EV Residuals (True - Pred)")
+    axes[1].set_xlabel("Residual Value")
+    axes[1].set_ylabel("Count")
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_cumulative_return(result_df, is_tansho=True):
+    # 単勝 or 複勝
+    pred_col = "pred_tansho_ev" if is_tansho else "pred_fukusho_ev"
+    true_col = "true_tansho_ev" if is_tansho else "true_fukusho_ev"
+
+    # 予測EVの降順に並べ替え
+    df_sorted = result_df.sort_values(by=pred_col, ascending=False).reset_index(drop=True)
+    # 実際のEVの累積和(買い目ごとに-100円している想定なので、df[true_col] そのものが収益)
+    cumsum_true = df_sorted[true_col].cumsum()
+    # 購入レース数に応じて何円使ったか = 100円ずつ × レース数
+    num_races = np.arange(1, len(df_sorted) + 1)
+    cost = 100 * num_races
+    # 回収率 = 累積収益 / 累積コスト
+    cumsum_return_rate = cumsum_true / cost
+
+    plt.figure(figsize=(8,5))
+    plt.plot(num_races, cumsum_return_rate, marker='o', markersize=2, linestyle='-')
+    plt.axhline(y=1.0, color='red', linestyle='--')  # 回収率100%ライン
+    title_name = "Tansho" if is_tansho else "Fukusho"
+    plt.title(f"Cumulative Return Rate ({title_name})")
+    plt.xlabel("Number of Bets (in descending order of predicted EV)")
+    plt.ylabel("Cumulative Return Rate")
+    plt.ylim(0, 2)  # 適宜調整
+    plt.grid(True)
+    plt.show()
 
 # 実行例
 if __name__ == "__main__":
