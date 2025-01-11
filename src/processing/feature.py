@@ -1284,7 +1284,7 @@ def edit_missing(df):
     # 重複行削除
     df = df.drop_duplicates(subset=["race_id", "馬番"])
     # ソート
-    df = df.sort_values(['horse_id', 'date', 'race_id']).reset_index(drop=True)
+    df = df.sort_values(['date', 'race_id', '馬番']).reset_index(drop=True)
 
 
     print("処理後DF：", df.shape)

@@ -127,6 +127,11 @@ def prepare_data(
         on=["race_id", "馬番"],
         how="inner"
     )
+    
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # ソート
+    df = df.sort_values(['date', 'race_id', '馬番']).reset_index(drop=True)
 
     # NaN埋め
     df["複勝"] = df["複勝"].fillna(0.0)
@@ -146,12 +151,19 @@ def prepare_data(
     ]
     df.drop(columns=default_leakage_cols, errors='ignore', inplace=True)
 
-    # 馬名を退避
-    df["馬名_raw"] = df["馬名"].astype(str)
+    # 馬の頭数が18を超えるレースを削除
+    horse_count_df = df.groupby(id_col)["馬番"].nunique().reset_index()
+    horse_count_df = horse_count_df.rename(columns={"馬番": "horse_count"})
+    valid_race_ids = horse_count_df.loc[horse_count_df["horse_count"] <= 18, id_col]
+    df = df[df[id_col].isin(valid_race_ids)]
+
 
     # 数値列 / カテゴリ列
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+    # 馬名を退避
+    df["馬名_raw"] = df["馬名"].astype(str)
+
     if finishing_col in num_cols:
         num_cols.remove(finishing_col)
     if single_odds_col in num_cols:
@@ -431,7 +443,7 @@ class MultiRaceEnvContinuous(gym.Env):
         #   (ベット額0のときは0報酬に)
         if race_cost > 0:
             ratio = (race_profit - race_cost) / race_cost
-            ratio_clamped = max(ratio, -0.99)  # -1よりは少し上(-0.99など)を下限に設定
+            ratio_clamped = max(ratio, -0.999)  # -1よりは少し上(-0.99など)を下限に設定
             ratio_clamped = min(ratio_clamped, 10)  # 最大値を20に設定
             # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
             reward = np.log1p(ratio_clamped)
@@ -440,11 +452,12 @@ class MultiRaceEnvContinuous(gym.Env):
     
         # 追加: race_costが100未満のときにペナルティ
         if race_cost < 100:
-            reward -= 0.1
+            reward -= 1
 
         self.current_race_idx += 1
         terminated = (self.current_race_idx >= self.races_per_episode)
         if self.capital <= 500:
+            reward -= 100
             terminated = True
 
         self.terminated = terminated
