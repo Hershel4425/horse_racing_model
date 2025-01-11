@@ -127,7 +127,7 @@ def prepare_data(
         on=["race_id", "馬番"],
         how="inner"
     )
-    
+
     # 重複行削除
     df = df.drop_duplicates(subset=["race_id", "馬番"])
     # ソート
@@ -443,7 +443,7 @@ class MultiRaceEnvContinuous(gym.Env):
         #   (ベット額0のときは0報酬に)
         if race_cost > 0:
             ratio = (race_profit - race_cost) / race_cost
-            ratio_clamped = max(ratio, -0.999)  # -1よりは少し上(-0.99など)を下限に設定
+            ratio_clamped = max(ratio, -0.99999)  # -1よりは少し上(-0.99など)を下限に設定
             ratio_clamped = min(ratio_clamped, 10)  # 最大値を20に設定
             # 例: log(1 + ratio) で極端な大勝ちへの感度を下げる
             reward = np.log1p(ratio_clamped)
