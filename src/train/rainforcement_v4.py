@@ -781,6 +781,29 @@ def run_training_and_inference_offpolicy(
     plt.tight_layout()
     plt.show()
 
+    # 掛け金が100円以上の行を抽出し、train_df_out / test_df_out それぞれで「単勝」列の分布を可視化します。
+    # (1) まず条件に合う行のみ抽出
+    train_df_out_100 = train_df_out[train_df_out["bet_amount"] >= 100].copy()
+    test_df_out_100 = test_df_out[test_df_out["bet_amount"] >= 100].copy()
+
+    # (2) 単勝オッズの分布をヒストグラムで可視化 (Train)
+    plt.figure(figsize=(10, 5))
+    plt.hist(train_df_out_100["単勝"], bins=50, edgecolor="black")
+    plt.title("【Train】掛け金>=100円の単勝オッズ分布")
+    plt.xlabel("単勝オッズ")
+    plt.ylabel("件数")
+    plt.tight_layout()
+    plt.show()
+
+    # (3) 単勝オッズの分布をヒストグラムで可視化 (Test)
+    plt.figure(figsize=(10, 5))
+    plt.hist(test_df_out_100["単勝"], bins=50, edgecolor="black")
+    plt.title("【Test】掛け金>=100円の単勝オッズ分布")
+    plt.xlabel("単勝オッズ")
+    plt.ylabel("件数")
+    plt.tight_layout()
+    plt.show()
+
     # モデル保存
     # stable-baselines3 の標準的な保存形式(model.zip)を使う方が安全です。
     model_save_path = os.path.join(MODEL_SAVE_DIR, "model.zip")
