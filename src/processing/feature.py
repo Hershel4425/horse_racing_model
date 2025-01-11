@@ -1280,6 +1280,13 @@ def edit_missing(df):
     df['タイム_missing'] = df['タイム'].isnull().astype(int)
     df['タイム'] = df['タイム'].fillna(0)
 
+    # 最後に重複削除
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # ソート
+    df = df.sort_values(['horse_id', 'date', 'race_id']).reset_index(drop=True)
+
+
     print("処理後DF：", df.shape)
     return df
 

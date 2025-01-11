@@ -305,6 +305,7 @@ class MultiRaceEnvContinuous(gym.Env):
             subdf = df[df[id_col] == rid].copy().sort_values(self.horse_col)
             self.max_horses = max(self.max_horses, len(subdf))
             self.race_map[rid] = subdf
+        print(f'最大頭数：{self.max_horses}')
         
         # 観測空間: max_horses頭 × feature_dim + 所持金1次元
         obs_dim = self.max_horses * self.feature_dim + 1
@@ -314,6 +315,7 @@ class MultiRaceEnvContinuous(gym.Env):
             shape=(obs_dim,),
             dtype=np.float32
         )
+        print(f'観測次元：{obs_dim}')
 
         # 行動空間:
         # 今後複勝にも対応予定 -> "各馬に何％賭けるか" を連続で出力する設計にすると拡張しやすい
