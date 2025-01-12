@@ -30,7 +30,7 @@ if not os.path.exists(MODEL_SAVE_DIR):
     os.makedirs(MODEL_SAVE_DIR)
 
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
-PRED_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743.csv")
+PRED_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743_full.csv")
 FUKUSHO_PATH = os.path.join(ROOT_PATH, "data/01_processed/50_odds/odds_df.csv")
 
 SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer_ev/{DATE_STRING}.csv")
@@ -307,28 +307,25 @@ def prepare_data_for_ev(
     if fukusho_col in num_cols:
         num_cols.remove(fukusho_col)
 
-    # 欠損埋め & 型変換
+    # 欠損埋め・型変換
     for c in cat_cols:
         for d in [train_df, valid_df, test_df]:
             d[c] = d[c].fillna("missing").astype(str)
-
     for n in num_cols:
         for d in [train_df, valid_df, test_df]:
             d[n] = d[n].fillna(0)
 
-    # カテゴリをコード化
+    # カテゴリをcodes化
     for c in cat_cols:
         train_df[c] = train_df[c].astype('category')
         valid_df[c] = valid_df[c].astype('category')
-        test_df[c]  = test_df[c].astype('category')
-
+        test_df[c] = test_df[c].astype('category')
         train_cat = train_df[c].cat.categories
         valid_df[c] = pd.Categorical(valid_df[c], categories=train_cat)
-        test_df[c]  = pd.Categorical(test_df[c], categories=train_cat)
-
-        train_df[c] = train_df[c].cat.codes
-        valid_df[c] = valid_df[c].cat.codes
-        test_df[c]  = test_df[c].cat.codes
+        test_df[c] = pd.Categorical(test_df[c], categories=train_cat)
+        train_df[c] = train_df[c].cat.codes.replace(-1, 0)
+        valid_df[c] = valid_df[c].cat.codes.replace(-1, 0)
+        test_df[c] = test_df[c].cat.codes.replace(-1, 0)
 
     # -----------------------------------------------------
     # 3) horse/jockey系PCA + その他数値スケーリング
@@ -542,7 +539,7 @@ def prepare_data_for_ev(
     # cat_unique
     cat_unique = {}
     for c in cat_cols:
-        cat_unique[c] = len(train_df[c].unique())
+        cat_unique[c] = len(train_df[c].unique()) + 1  # +1 はUNKぶん
 
     # 数値次元: (other + horsePCA + jockeyPCA)
     actual_num_dim = train_other_scaled.shape[1] + train_horse_pca.shape[1] + train_jockey_pca.shape[1]

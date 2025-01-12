@@ -839,4 +839,4 @@ def run_train_time_split(
         pickle.dump(scaler_other, f)
 
     print("\n=== Final Ensemble done. Best single model index:", best_model_idx+1)
-    return models, weights, pred_df
+    return 0
