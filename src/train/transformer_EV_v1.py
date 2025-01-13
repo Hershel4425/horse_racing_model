@@ -25,59 +25,63 @@ if torch.cuda.is_available():
 # ファイルパス設定（必要に応じて変更してください）
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transformer_期待値モデル/{DATE_STRING}")
-if not os.path.exists(MODEL_SAVE_DIR):
-    os.makedirs(MODEL_SAVE_DIR)
+MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transformer_diffBCE/{DATE_STRING}")
 
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
-PRED_PATH = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743_full.csv")
-FUKUSHO_PATH = os.path.join(ROOT_PATH, "data/01_processed/50_odds/odds_df.csv")
+PRED_PATH  = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743_full.csv")
+SAVE_PATH_PRED      = os.path.join(ROOT_PATH, f"result/predictions/transformer_diffBCE/{DATE_STRING}.csv")
+SAVE_PATH_FULL_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer_diffBCE/{DATE_STRING}_full.csv")
+SAVE_PATH_MODEL     = os.path.join(MODEL_SAVE_DIR, "model_diffBCE.pickle")
 
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer_ev/{DATE_STRING}.csv")
-SAVE_PATH_FULL_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer_ev/{DATE_STRING}_full.csv")
-SAVE_PATH_MODEL = os.path.join(MODEL_SAVE_DIR, "model_ev.pickle")
-SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse_ev.pickle")
-SAVE_PATH_PCA_MODEL_JOCKEY = os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey_ev.pickle")
-SAVE_PATH_SCALER_HORSE = os.path.join(MODEL_SAVE_DIR, "scaler_horse_ev.pickle")
-SAVE_PATH_SCALER_JOCKEY = os.path.join(MODEL_SAVE_DIR, "scaler_jockey_ev.pickle")
-SAVE_PATH_SCALER_OTHER = os.path.join(MODEL_SAVE_DIR, "scaler_other_ev.pickle")
+SAVE_PATH_PCA_MODEL_HORSE = os.path.join(MODEL_SAVE_DIR, "pcamodel_horse_diffBCE.pickle")
+SAVE_PATH_PCA_MODEL_JOCKEY= os.path.join(MODEL_SAVE_DIR, "pcamodel_jockey_diffBCE.pickle")
+SAVE_PATH_SCALER_HORSE    = os.path.join(MODEL_SAVE_DIR, "scaler_horse_diffBCE.pickle")
+SAVE_PATH_SCALER_JOCKEY   = os.path.join(MODEL_SAVE_DIR, "scaler_jockey_diffBCE.pickle")
+SAVE_PATH_SCALER_OTHER    = os.path.join(MODEL_SAVE_DIR, "scaler_other_diffBCE.pickle")
 
-# =====================================================
-# Datasetクラス
-# =====================================================
-class HorseRaceDataset(Dataset):
+########################################
+# 1) データセットクラス
+########################################
+class HorseRaceDatasetDiffBCE(Dataset):
     """
-    sequences: (num_races, max_seq_len, feature_dim)
-    labels:    (num_races, max_seq_len, 2)  2 -> [単勝期待値, 複勝期待値]
-    masks:     (num_races, max_seq_len)
-    race_ids:  (num_races, max_seq_len)
-    horse_nums:(num_races, max_seq_len)
+    本サンプルでは
+     - sequences: (num_races, max_seq_len, feature_dim)
+       → 特徴量には「支持率」を含む
+     - labels:    (num_races, max_seq_len) → 1着なら1、そうでなければ0
+     - base_supports: (num_races, max_seq_len) → 各馬の支持率(0～1)
+     - masks:     (num_races, max_seq_len)     → True=実データ, False=パディング
+     - race_ids:  (num_races, max_seq_len)
+     - horse_nums:(num_races, max_seq_len)
     """
-    def __init__(self, sequences, labels, masks, race_ids, horse_nums):
-        self.sequences = sequences
-        self.labels = labels
-        self.masks = masks
-        self.race_ids = race_ids
-        self.horse_nums = horse_nums
+    def __init__(self, sequences, labels, base_supports, masks, race_ids, horse_nums):
+        self.sequences    = sequences      # (N, max_seq_len, feature_dim)
+        self.labels       = labels         # (N, max_seq_len)
+        self.base_supports= base_supports  # (N, max_seq_len)
+        self.masks        = masks          # (N, max_seq_len)
+        self.race_ids     = race_ids
+        self.horse_nums   = horse_nums
 
     def __len__(self):
         return len(self.sequences)
 
     def __getitem__(self, idx):
-        seq = torch.tensor(self.sequences[idx], dtype=torch.float32)
-        lab = torch.tensor(self.labels[idx], dtype=torch.float32)
-        m = torch.tensor(self.masks[idx], dtype=torch.bool)
-        rid = torch.tensor(self.race_ids[idx], dtype=torch.long)
-        hn = torch.tensor(self.horse_nums[idx], dtype=torch.long)
-        return seq, lab, m, rid, hn
+        seq = torch.tensor(self.sequences[idx],      dtype=torch.float32)
+        lab = torch.tensor(self.labels[idx],         dtype=torch.float32)
+        sup = torch.tensor(self.base_supports[idx],  dtype=torch.float32)
+        m   = torch.tensor(self.masks[idx],          dtype=torch.bool)
+        rid = torch.tensor(self.race_ids[idx],       dtype=torch.long)
+        hn  = torch.tensor(self.horse_nums[idx],     dtype=torch.long)
+        return seq, lab, sup, m, rid, hn
 
-# =====================================================
-# Embedding + Transformerモデルクラス
-# =====================================================
+
+########################################
+# 2) Embedding + Transformer モデル
+########################################
 class FeatureEmbedder(nn.Module):
     """
-    カテゴリ特徴量と数値特徴量を取り込み、
-    Embedding + Linear で最終的に d_model 次元へ変換する層
+    ここは元のEmbedding処理と同様。
+    カテゴリ列をEmbedding、数値列をLinearで変換して concat し、
+    d_model次元にマッピングする。
     """
     def __init__(self, cat_unique, cat_cols, cat_emb_dim=16, num_dim=50, feature_dim=None):
         super().__init__()
@@ -86,51 +90,45 @@ class FeatureEmbedder(nn.Module):
 
         for c in cat_cols:
             unique_count = cat_unique[c]
-            # why: Embedding次元は適度に小さくすることで過学習を防ぎつつ、
-            #      カテゴリ特徴をある程度圧縮・表現することができる。
             emb_dim_real = min(cat_emb_dim, unique_count // 2 + 1)
             emb_dim_real = max(emb_dim_real, 4)
             self.emb_layers[c] = nn.Embedding(unique_count, emb_dim_real)
 
-        # why: 数値特徴量にはLinearをかけて表現力を増やす
         self.num_linear = nn.Linear(num_dim, num_dim)
 
-        # Embedding出力と数値特徴量を結合するための最終線形層
         cat_out_dim = sum([self.emb_layers[c].embedding_dim for c in self.cat_cols])
         self.out_linear = nn.Linear(cat_out_dim + num_dim, feature_dim)
 
     def forward(self, x):
         """
         x: (batch, seq_len, feature_dim)
-        ただしcat_cols部分が先頭に、後ろに数値特徴量という構造を前提
+        先頭 cat_len 個はカテゴリ列、それ以降は数値列
         """
         cat_len = len(self.cat_cols)
-        cat_x = x[..., :cat_len].long()  # カテゴリ部分
-        num_x = x[..., cat_len:]         # 数値部分
+        cat_x = x[..., :cat_len].long()
+        num_x = x[..., cat_len:]
 
         embs = []
         for i, c in enumerate(self.cat_cols):
             embs.append(self.emb_layers[c](cat_x[..., i]))
 
-        cat_emb = torch.cat(embs, dim=-1)  # (batch, seq_len, sum_of_emb_dims)
+        cat_emb = torch.cat(embs, dim=-1)  # (batch, seq_len, sum_of_cat_emb_dim)
         num_emb = self.num_linear(num_x)   # (batch, seq_len, num_dim)
 
         out = torch.cat([cat_emb, num_emb], dim=-1)
-        out = self.out_linear(out)
+        out = self.out_linear(out)         # (batch, seq_len, d_model)
         return out
 
 class PositionalEncoding(nn.Module):
     """
-    トランスフォーマのSelf-Attentionで「系列順序」を学習させるために位置情報を付与
+    Transformerで位置情報を付与するための Positional Encoding
     """
     def __init__(self, d_model, max_len=1000):
         super().__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1).float()
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0)/d_model))
 
-        # why: sin, cosを交互に埋め込み、
-        #      各位置ごとの周期的パターンでネットワークが位置を認識しやすい。
         pe[:, 0::2] = torch.sin(position * div_term)
         if d_model % 2 == 1:
             pe[:, 1::2] = torch.cos(position * div_term[:-1])
@@ -141,31 +139,33 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         seq_len = x.size(1)
-        # why: 位置エンコードベクトルを足し込むだけでSelf-Attentionが位置を判断可能
         x = x + self.pe[:seq_len, :].unsqueeze(0)
         return x
 
-class HorseTransformer(nn.Module):
+class HorseTransformerDiffBCE(nn.Module):
     """
-    単勝期待値、複勝期待値(2次元)を同時に予測するTransformerモデル
-    Embedding + PositionalEncoding + TransformerEncoder -> 最後にLinearで2ターゲット出力
+    最終出力 = 1次元 (＝ベース支持率に加算する「差分」)
     """
-    def __init__(self, cat_unique, cat_cols, max_seq_len, num_dim=50,
-                 d_model=128, nhead=8, num_layers=4, dropout=0.1):
+    def __init__(self,
+                 cat_unique, cat_cols,
+                 max_seq_len,
+                 num_dim=50,
+                 d_model=128,
+                 nhead=4,
+                 num_layers=4,
+                 dropout=0.1):
         super().__init__()
 
-        # 特徴量埋め込み
         self.feature_embedder = FeatureEmbedder(
-            cat_unique, cat_cols,
+            cat_unique=cat_unique,
+            cat_cols=cat_cols,
             cat_emb_dim=16,
             num_dim=num_dim,
-            feature_dim=d_model  # Transformerの入力次元(d_model)に揃える
+            feature_dim=d_model
         )
 
-        # 位置エンコーディング
         self.pos_encoder = PositionalEncoding(d_model, max_len=max_seq_len)
 
-        # TransformerEncoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -174,33 +174,33 @@ class HorseTransformer(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # 最終出力層 -> 2つ(単勝期待値, 複勝期待値)を回帰で出す
-        self.fc_out = nn.Linear(d_model, 2)
+        # → 差分を1次元出力（例: shape=(batch, seq_len, 1)）
+        self.fc_out = nn.Linear(d_model, 1)
 
     def forward(self, src, src_key_padding_mask=None):
         """
-        src_key_padding_mask=True の部分をアテンションから除外することで
-        パディング部に対する誤学習を防ぐ
+        src: (batch, seq_len, feature_dim)
+        src_key_padding_mask: (batch, seq_len)  True=実データ or False=pad(除外)
         """
-        emb = self.feature_embedder(src)                  # (batch, seq_len, d_model)
-        emb = self.pos_encoder(emb)                       # (batch, seq_len, d_model)
+        emb = self.feature_embedder(src)
+        emb = self.pos_encoder(emb)
         out = self.transformer_encoder(emb, src_key_padding_mask=~src_key_padding_mask)
-        logits = self.fc_out(out)                         # (batch, seq_len, 2)
-        return logits
+        diff = self.fc_out(out)  # shape: (batch, seq_len, 1)
+        return diff
 
-# =====================================================
-# データ分割 + 前処理周りの関数
-# =====================================================
+
+########################################
+# 3) データ準備用の例関数
+########################################
 def split_data(df, id_col="race_id", test_ratio=0.1, valid_ratio=0.1):
     """
-    日付順でソートし、レースIDを分割。未来データの混入を防ぎつつ
-    train->valid->testと時系列分割する
+    日付順でsplit
     """
     df = df.sort_values('date').reset_index(drop=True)
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
 
-    test_cut = int(dataset_len * (1 - test_ratio))
+    test_cut  = int(dataset_len * (1 - test_ratio))
     valid_cut = int(test_cut * (1 - valid_ratio))
 
     train_ids = race_ids[:valid_cut]
@@ -210,421 +210,321 @@ def split_data(df, id_col="race_id", test_ratio=0.1, valid_ratio=0.1):
     train_df = df[df[id_col].isin(train_ids)].copy()
     valid_df = df[df[id_col].isin(valid_ids)].copy()
     test_df  = df[df[id_col].isin(test_ids)].copy()
-
     return train_df, valid_df, test_df
 
-def prepare_data_for_ev(
-    data_path,
-    pred_path,
-    fukusho_path,
+def prepare_data_diff_bce(
+    data_path=DATA_PATH,
+    pred_path=PRED_PATH,
     id_col="race_id",
-    rank_col="着順",
-    tansho_col="単勝",  # 払い戻し(総額orオッズ)
-    fukusho_col="複勝", # 払い戻し(総額orオッズ)
-    pca_dim_horse=50,
-    pca_dim_jockey=50,
+    rank_col="着順",   # 勝ち(1着)を表す列
+    pop_col="単勝", # ベース支持率(人気=1番人気での支持率相当)
     test_ratio=0.1,
-    valid_ratio=0.1
+    valid_ratio=0.1,
+    pca_dim_horse=50,
+    pca_dim_jockey=50
 ):
     """
-    データを読み込み、以下を実施:
-      1) 時系列split
-      2) カテゴリ列 + 数値列の分割と加工
-      3) horse/jockey専用PCA + その他数値スケーリング
-      4) ラベル列: 単勝期待値/複勝期待値
-      5) Sequence形式への変換 (パディング & マスク)
+    例: 
+     1) feature.csv を読み込む
+     2) pred.csv には "P_pop1" 等が入っていると仮定し、マージして「支持率」列を持つ
+     3) 1着なら label=1, それ以外=0
+     4) Sequence化
+     5) HorseRaceDatasetDiffBCE で Dataset作成
     """
-    # -----------------------------------------------------
-    # 1) CSV読み込み & split
-    # -----------------------------------------------------
-    df1 = pd.read_csv(data_path, encoding='utf-8-sig')
-    df2 = pd.read_csv(pred_path, encoding='utf-8-sig')
-    fukusho_df = pd.read_csv(fukusho_path, encoding='utf-8-sig')
-    fukusho_df = fukusho_df.rename(columns={'馬番1': '馬番'})
-    fukusho_df = fukusho_df.loc[fukusho_df['券種'] == '複勝']
-    # 複勝を倍率で扱うために 100 で割る
-    fukusho_df["複勝"] = fukusho_df["払戻金額"] / 100.0
+    # 1) CSV読み込み
+    df_feature = pd.read_csv(data_path, encoding='utf-8-sig')
+    df_pred    = pd.read_csv(pred_path, encoding='utf-8-sig')  # 例: ここにP_pop1列などがある想定
 
-    # df2 に複勝列をマージ
-    df_temp = pd.merge(
-        df2,
-        fukusho_df[["race_id", "馬番", "複勝"]],
-        on=["race_id", "馬番"],
-        how="left"
-    )
-    # feature.csv(df1) とマージ
+    # マージ: race_id, 馬番 がキー
     df = pd.merge(
-        df1,
-        df_temp[["race_id", "馬番", "P_top1", "P_top3", "P_top5", "P_pop1", "P_pop3", "P_pop5", "複勝"]],
-        on=["race_id", "馬番"],
+        df_feature,
+        df_pred[["race_id","馬番","P_top1","P_pop1","P_top3","P_pop3","P_top5","P_pop5"]],  # 必要な列だけ
+        on=["race_id","馬番"],
         how="inner"
     )
 
-    # 重複行削除
-    df = df.drop_duplicates(subset=["race_id", "馬番"])
-    # ソート
-    df = df.sort_values(['date', 'race_id', '馬番']).reset_index(drop=True)
+    # 勝ったかどうか(1/0)
+    df["is_win"] = (df[rank_col] == 1).astype(int)
+    # 支持率を0～1に正規化した列(すでに0～1になっているならそのまま)
+    # ここでは P_pop1 は「1番人気になっているかどうか(0/1)」ではなく、実際の支持率と仮定
+    df["base_support"] = 0.8 / (df[pop_col] + 1e-10)
+    
 
-    # NaN埋め
-    df["複勝"] = df["複勝"].fillna(0.0)
-
-    # データ分割
+    # 時系列split
     train_df, valid_df, test_df = split_data(df, id_col=id_col,
                                              test_ratio=test_ratio,
                                              valid_ratio=valid_ratio)
 
-    # -----------------------------------------------------
-    # 2) カテゴリ列 + 数値列の加工 (leakage項目を排除など)
-    #    ※ あくまで例: 不要列やID系は除外
-    # -----------------------------------------------------
-    # 例: 学習に使わないリーク情報や不要列(=レースの結果そのもの)は除く
-    #     必要に応じて調整
+    # ----- 以下、カテゴリ変換やPCAなどはお好みで実施 ------
+    # (サンプルでは最低限の処理のみ記載)
+
+    cat_cols_all = train_df.select_dtypes(exclude=[np.number]).columns.tolist()
+    num_cols_all = train_df.select_dtypes(include=[np.number]).columns.tolist()
+
+    # ID系・リーク系除外
+    # 必要に応じてleakage_colsを定義
     leakage_cols = [
-        '斤量','タイム','着差','上がり3F','馬体重','人気',
-        'horse_id','jockey_id','trainer_id',
-        '順位点',
-        '入線','1着タイム差','先位タイム差','5着着差','増減',
-        '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金',
-        '前半ペース','後半ペース','ペース','上がり3F順位',
-        '100m','200m','300m',
-        '400m','500m','600m','700m','800m','900m','1000m','1100m','1200m','1300m','1400m','1500m',
-        '1600m','1700m','1800m','1900m','2000m','2100m','2200m','2300m','2400m','2500m','2600m',
-        '2700m','2800m','2900m','3000m','3100m','3200m','3300m','3400m','3500m','3600m',
-        'horse_ability'
-    ]
-    # 数値列・カテゴリ列を抽出
-    cat_cols_all = df.select_dtypes(exclude=[np.number]).columns.tolist()
-    num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
+            '斤量','タイム','着差','単勝','上がり3F','馬体重','人気',
+            'horse_id','jockey_id',
+            'trainer_id',
+            '順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
+            '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース',
+            '上がり3F順位','100m','200m','300m','400m','500m','600m','700m','800m','900m','1000m',
+            '1100m','1200m','1300m','1400m','1500m','1600m','1700m','1800m','1900m','2000m',
+            '2100m','2200m','2300m','2400m','2500m','2600m','2700m','2800m','2900m','3000m',
+            '3100m','3200m','3300m','3400m','3500m','3600m','horse_ability',
+            'is_win',
+            'base_support'
+        ]
+    cat_cols = [c for c in cat_cols_all if c not in leakage_cols and c not in [id_col]]
+    num_cols = [c for c in num_cols_all if c not in leakage_cols and c not in [id_col]]
 
-    # 除外
-    cat_cols = [c for c in cat_cols_all if (c not in leakage_cols) and (c not in [id_col])]
-    num_cols = [c for c in num_cols_all if (c not in leakage_cols) and (c not in [id_col])]
-
-    if rank_col in num_cols:
-        num_cols.remove(rank_col)
-    if tansho_col in num_cols:
-        num_cols.remove(tansho_col)
-    if fukusho_col in num_cols:
-        num_cols.remove(fukusho_col)
-
-    # 欠損埋め・型変換
+    # カテゴリ欠損埋め
     for c in cat_cols:
         for d in [train_df, valid_df, test_df]:
             d[c] = d[c].fillna("missing").astype(str)
+
+    # 数値欠損埋め
     for n in num_cols:
         for d in [train_df, valid_df, test_df]:
             d[n] = d[n].fillna(0)
 
-    # カテゴリをcodes化
+    # カテゴリ→codes
     for c in cat_cols:
         train_df[c] = train_df[c].astype('category')
         valid_df[c] = valid_df[c].astype('category')
-        test_df[c] = test_df[c].astype('category')
-        train_cat = train_df[c].cat.categories
-        valid_df[c] = pd.Categorical(valid_df[c], categories=train_cat)
-        test_df[c] = pd.Categorical(test_df[c], categories=train_cat)
+        test_df[c]  = test_df[c].astype('category')
+        base_cat = train_df[c].cat.categories
+        valid_df[c] = pd.Categorical(valid_df[c], categories=base_cat)
+        test_df[c]  = pd.Categorical(test_df[c], categories=base_cat)
         train_df[c] = train_df[c].cat.codes.replace(-1, 0)
         valid_df[c] = valid_df[c].cat.codes.replace(-1, 0)
-        test_df[c] = test_df[c].cat.codes.replace(-1, 0)
+        test_df[c]  = test_df[c].cat.codes.replace(-1, 0)
 
-    # -----------------------------------------------------
-    # 3) horse/jockey系PCA + その他数値スケーリング
-    #    (例: 競走馬芝成績 / 騎手芝成績 など)
-    # -----------------------------------------------------
-    pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
-    pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
+    # PCA対象探し(例)
+    pca_pattern_horse = r'^(競走馬芝|競走馬ダート)'
+    pca_pattern_jockey= r'^(騎手芝|騎手ダート)'
 
     pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
     pca_jockey_target_cols= [c for c in num_cols if re.match(pca_pattern_jockey, c)]
-    other_num_cols = [c for c in num_cols if (c not in pca_horse_target_cols)
-                      and (c not in pca_jockey_target_cols)]
+    other_num_cols = [c for c in num_cols if c not in pca_horse_target_cols + pca_jockey_target_cols]
 
-    # スケーリング
+    # スケーラ & PCA
     scaler_horse = StandardScaler()
     scaler_jockey= StandardScaler()
     scaler_other = StandardScaler()
 
     # horse
-    train_horse_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols]) \
-        if len(pca_horse_target_cols)>0 else np.zeros((len(train_df),0))
-    valid_horse_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols]) \
-        if len(pca_horse_target_cols)>0 else np.zeros((len(valid_df),0))
-    test_horse_scaled  = scaler_horse.transform(test_df[pca_horse_target_cols]) \
-        if len(pca_horse_target_cols)>0 else np.zeros((len(test_df),0))
+    def transform_pca(df_part, pca_cols, scaler, pca_dim):
+        if len(pca_cols)==0:
+            return np.zeros((len(df_part),0)), None
+        arr = df_part[pca_cols].values
+        arr_scaled = scaler.transform(arr) if hasattr(scaler, 'mean_') else scaler.fit_transform(arr)
+        if pca_dim>0 and pca_dim <= arr_scaled.shape[1]:
+            pca_model = PCA(n_components=pca_dim)
+            arr_pca = pca_model.fit_transform(arr_scaled) if not hasattr(pca_model, 'components_') else pca_model.transform(arr_scaled)
+            return arr_pca, pca_model
+        else:
+            return arr_scaled, None
 
-    pca_dim_horse = min(pca_dim_horse, train_horse_scaled.shape[1]) if len(pca_horse_target_cols)>0 else 0
-    if pca_dim_horse > 0:
-        pca_model_horse = PCA(n_components=pca_dim_horse)
-        train_horse_pca = pca_model_horse.fit_transform(train_horse_scaled)
-        valid_horse_pca = pca_model_horse.transform(valid_horse_scaled)
-        test_horse_pca  = pca_model_horse.transform(test_horse_scaled)
+    # Fit on train
+    if len(pca_horse_target_cols)>0:
+        scaler_horse.fit(train_df[pca_horse_target_cols])
+    if len(pca_jockey_target_cols)>0:
+        scaler_jockey.fit(train_df[pca_jockey_target_cols])
+    if len(other_num_cols)>0:
+        scaler_other.fit(train_df[other_num_cols])
+
+    # PCA:
+    #  -> train
+    horse_train_arr = scaler_horse.transform(train_df[pca_horse_target_cols]) if len(pca_horse_target_cols)>0 else np.zeros((len(train_df),0))
+    if pca_dim_horse>0 and pca_dim_horse<=horse_train_arr.shape[1]:
+        pca_model_horse = PCA(n_components=pca_dim_horse).fit(horse_train_arr)
+        horse_train_pca = pca_model_horse.transform(horse_train_arr)
     else:
-        # no columns
         pca_model_horse = None
-        train_horse_pca = np.zeros((len(train_df),0))
-        valid_horse_pca = np.zeros((len(valid_df),0))
-        test_horse_pca  = np.zeros((len(test_df),0))
+        horse_train_pca = horse_train_arr
+
+    #  -> valid
+    horse_valid_arr = scaler_horse.transform(valid_df[pca_horse_target_cols]) if len(pca_horse_target_cols)>0 else np.zeros((len(valid_df),0))
+    if pca_model_horse is not None:
+        horse_valid_pca = pca_model_horse.transform(horse_valid_arr)
+    else:
+        horse_valid_pca = horse_valid_arr
+
+    #  -> test
+    horse_test_arr = scaler_horse.transform(test_df[pca_horse_target_cols]) if len(pca_horse_target_cols)>0 else np.zeros((len(test_df),0))
+    if pca_model_horse is not None:
+        horse_test_pca = pca_model_horse.transform(horse_test_arr)
+    else:
+        horse_test_pca = horse_test_arr
 
     # jockey
-    train_jockey_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols]) \
-        if len(pca_jockey_target_cols)>0 else np.zeros((len(train_df),0))
-    valid_jockey_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols]) \
-        if len(pca_jockey_target_cols)>0 else np.zeros((len(valid_df),0))
-    test_jockey_scaled  = scaler_jockey.transform(test_df[pca_jockey_target_cols]) \
-        if len(pca_jockey_target_cols)>0 else np.zeros((len(test_df),0))
-
-    pca_dim_jockey = min(pca_dim_jockey, train_jockey_scaled.shape[1]) if len(pca_jockey_target_cols)>0 else 0
-    if pca_dim_jockey > 0:
-        pca_model_jockey = PCA(n_components=pca_dim_jockey)
-        train_jockey_pca = pca_model_jockey.fit_transform(train_jockey_scaled)
-        valid_jockey_pca = pca_model_jockey.transform(valid_jockey_scaled)
-        test_jockey_pca  = pca_model_jockey.transform(test_jockey_scaled)
+    jockey_train_arr = scaler_jockey.transform(train_df[pca_jockey_target_cols]) if len(pca_jockey_target_cols)>0 else np.zeros((len(train_df),0))
+    if pca_dim_jockey>0 and pca_dim_jockey<=jockey_train_arr.shape[1]:
+        pca_model_jockey = PCA(n_components=pca_dim_jockey).fit(jockey_train_arr)
+        jockey_train_pca = pca_model_jockey.transform(jockey_train_arr)
     else:
         pca_model_jockey = None
-        train_jockey_pca = np.zeros((len(train_df),0))
-        valid_jockey_pca = np.zeros((len(valid_df),0))
-        test_jockey_pca  = np.zeros((len(test_df),0))
+        jockey_train_pca = jockey_train_arr
+
+    jockey_valid_arr = scaler_jockey.transform(valid_df[pca_jockey_target_cols]) if len(pca_jockey_target_cols)>0 else np.zeros((len(valid_df),0))
+    jockey_valid_pca = pca_model_jockey.transform(jockey_valid_arr) if pca_model_jockey else jockey_valid_arr
+
+    jockey_test_arr = scaler_jockey.transform(test_df[pca_jockey_target_cols]) if len(pca_jockey_target_cols)>0 else np.zeros((len(test_df),0))
+    jockey_test_pca = pca_model_jockey.transform(jockey_test_arr) if pca_model_jockey else jockey_test_arr
 
     # other
-    train_other_scaled = scaler_other.fit_transform(train_df[other_num_cols]) \
-        if len(other_num_cols)>0 else np.zeros((len(train_df),0))
-    valid_other_scaled = scaler_other.transform(valid_df[other_num_cols]) \
-        if len(other_num_cols)>0 else np.zeros((len(valid_df),0))
-    test_other_scaled  = scaler_other.transform(test_df[other_num_cols]) \
-        if len(other_num_cols)>0 else np.zeros((len(test_df),0))
+    other_train_arr = scaler_other.transform(train_df[other_num_cols]) if len(other_num_cols)>0 else np.zeros((len(train_df),0))
+    other_valid_arr = scaler_other.transform(valid_df[other_num_cols]) if len(other_num_cols)>0 else np.zeros((len(valid_df),0))
+    other_test_arr  = scaler_other.transform(test_df[other_num_cols])  if len(other_num_cols)>0 else np.zeros((len(test_df),0))
 
-    # 結合
-    def concat_features(df_part, cat_cols, other_scaled, horse_pca, jockey_pca):
-        cat_values = df_part[cat_cols].values if len(cat_cols)>0 else np.zeros((len(df_part),0))
-        return np.concatenate([cat_values, other_scaled, horse_pca, jockey_pca], axis=1)
+    # 結合関数
+    def concat_features(df_part, cat_cols, other_arr, horse_pca, jockey_pca):
+        cat_val = df_part[cat_cols].values if len(cat_cols)>0 else np.zeros((len(df_part),0))
+        return np.concatenate([cat_val, other_arr, horse_pca, jockey_pca], axis=1)
 
-    X_train = concat_features(train_df, cat_cols, train_other_scaled, train_horse_pca, train_jockey_pca)
-    X_valid = concat_features(valid_df, cat_cols, valid_other_scaled, valid_horse_pca, valid_jockey_pca)
-    X_test  = concat_features(test_df,  cat_cols, test_other_scaled,  test_horse_pca,  test_jockey_pca)
+    X_train = concat_features(train_df, cat_cols, other_train_arr, horse_train_pca, jockey_train_pca)
+    X_valid = concat_features(valid_df, cat_cols, other_valid_arr, horse_valid_pca, jockey_valid_pca)
+    X_test  = concat_features(test_df, cat_cols, other_test_arr,  horse_test_pca,  jockey_test_pca)
 
-    # -----------------------------------------------------
-    # 4) ラベル列(単勝期待値, 複勝期待値)を作成
-    # -----------------------------------------------------
-    # "100円賭けたときの期待値"を算出
-    # 単勝 => 1着なら (単勝払い戻し - 100), それ以外は -100
-    # 複勝 => 3着以内なら (複勝払い戻し - 100), それ以外は -100
-    # ※ もし df[tansho_col] / df[fukusho_col] が「オッズ倍(2.5など)」の場合、
-    #    実際の払い戻し額は odds*100円なので下記のように変換
-    #    例: EV_tansho = (df[tansho_col] * 100 - 100) if 1着 else -100
-    # ※ 既に df[tansho_col]/[fukusho_col] が「払い戻し金額(円)」ならそのまま -100
-    def get_tansho_ev(row):
-        if row[rank_col] == 1:
-            # もし df["単勝"] がオッズ倍=2.5 なら row[tansho_col]*100 -100
-            # もし df["単勝"] が払い戻し金額=250 なら row[tansho_col] -100
-            # 下記はオッズ倍を想定
-            return row[tansho_col]*100 - 100
-        else:
-            return -100
+    # ラベル: is_win (1/0)
+    y_train = train_df["is_win"].values
+    y_valid = valid_df["is_win"].values
+    y_test  = test_df["is_win"].values
 
-    def get_fukusho_ev(row):
-        if row[rank_col] <= 3:
-            # 同上の注意。複勝列がオッズ倍なら→ *100 -100
-            return row[fukusho_col]*100 - 100
-        else:
-            return -100
+    # ベース支持率
+    sup_train = train_df["base_support"].values
+    sup_valid = valid_df["base_support"].values
+    sup_test  = test_df["base_support"].values
 
-    train_df = train_df.assign(
-    EV_tansho=train_df.apply(get_tansho_ev, axis=1),
-    EV_fukusho=train_df.apply(get_fukusho_ev, axis=1)
-    )
-
-    valid_df = valid_df.assign(
-    EV_tansho=valid_df.apply(get_tansho_ev, axis=1),
-    EV_fukusho=valid_df.apply(get_fukusho_ev, axis=1)
-    )
-
-    test_df = test_df.assign(
-    EV_tansho=test_df.apply(get_tansho_ev, axis=1),
-    EV_fukusho=test_df.apply(get_fukusho_ev, axis=1)
-    )
-
-    # -----------------------------------------------------
-    # 5) Sequence化
-    #    単勝&複勝(2次元)ラベルをパディングしてマスク
-    # -----------------------------------------------------
-    def create_sequences(_df, X):
+    # Sequence 化 (同レース内でパディング揃え)
+    def create_sequences(_df, X, y, base_support):
         rids = _df[id_col].values
-        horse_nums = _df["馬番"].values if "馬番" in _df.columns else np.arange(len(_df))
-
-        ev_tansho = _df["EV_tansho"].values
-        ev_fukusho= _df["EV_fukusho"].values
+        horses= _df["馬番"].values if "馬番" in _df.columns else np.arange(len(_df))
 
         groups = _df.groupby(id_col)
         max_seq_len = groups.size().max()
-        feature_dim = X.shape[1]
+        feat_dim = X.shape[1]
 
-        sequences, labels, masks = [], [], []
-        race_ids_seq, horse_nums_seq = [], []
+        seq_list, label_list, sup_list, mask_list = [], [], [], []
+        rid_list, horse_list = [], []
 
-        for unique_rid in _df[id_col].unique():
-            idx = np.where(rids == unique_rid)[0]
+        for rid_unique in _df[id_col].unique():
+            idx = np.where(rids == rid_unique)[0]
             feat = X[idx]
-            seq_len = len(idx)
+            lab  = y[idx]
+            sup  = base_support[idx]
+            length = len(idx)
 
-            # ラベル
-            lab = np.stack([ev_tansho[idx], ev_fukusho[idx]], axis=-1)  # shape: (seq_len, 2)
+            pad_len = max_seq_len - length
+            if pad_len>0:
+                # パディング
+                feat = np.vstack([feat, np.zeros((pad_len, feat_dim))])
+                lab_pad = np.zeros((pad_len,), dtype=float)
+                lab  = np.concatenate([lab, lab_pad])
+                sup_pad = np.zeros((pad_len,), dtype=float)
+                sup  = np.concatenate([sup, sup_pad])
 
-            # race_id, 馬番
-            rid_array = rids[idx]
-            horse_array = horse_nums[idx]
+                mask = [True]*length + [False]*pad_len
 
-            pad_len = max_seq_len - seq_len
-            if pad_len > 0:
-                feat = np.vstack([feat, np.zeros((pad_len, feature_dim))])
-                pad_label = np.zeros((pad_len, 2), dtype=float)
-                lab = np.concatenate([lab, pad_label], axis=0)
-
-                # mask: True=実データ, False=pad
-                mask = [True]*seq_len + [False]*pad_len
-
-                rid_pad = np.full((pad_len,), fill_value=-1, dtype=rid_array.dtype)
-                h_pad   = np.full((pad_len,), fill_value=-1, dtype=horse_array.dtype)
-                rid_array   = np.concatenate([rid_array, rid_pad])
-                horse_array = np.concatenate([horse_array, h_pad])
+                rid_pad   = np.full((pad_len,), -1, dtype=rids.dtype)
+                horse_pad = np.full((pad_len,), -1, dtype=horses.dtype)
+                rid_arr   = np.concatenate([rids[idx],   rid_pad])
+                horse_arr = np.concatenate([horses[idx], horse_pad])
             else:
-                mask = [True]*seq_len
+                mask = [True]*length
+                rid_arr   = rids[idx]
+                horse_arr = horses[idx]
 
-            sequences.append(feat)
-            labels.append(lab)
-            masks.append(mask)
-            race_ids_seq.append(rid_array)
-            horse_nums_seq.append(horse_array)
+            seq_list.append(feat)
+            label_list.append(lab)
+            sup_list.append(sup)
+            mask_list.append(mask)
+            rid_list.append(rid_arr)
+            horse_list.append(horse_arr)
 
-        return sequences, labels, masks, max_seq_len, race_ids_seq, horse_nums_seq
+        return seq_list, label_list, sup_list, mask_list, max_seq_len, rid_list, horse_list
 
-    train_seq, train_lab, train_mask, max_seq_len_train, train_rids_seq, train_horses_seq = create_sequences(train_df, X_train)
-    valid_seq, valid_lab, valid_mask, max_seq_len_valid, valid_rids_seq, valid_horses_seq = create_sequences(valid_df, X_valid)
-    test_seq,  test_lab,  test_mask,  max_seq_len_test,  test_rids_seq,  test_horses_seq  = create_sequences(test_df,  X_test)
+    train_seq, train_lab, train_sup, train_msk, len_tr, train_rids, train_horses = create_sequences(train_df, X_train, y_train, sup_train)
+    valid_seq, valid_lab, valid_sup, valid_msk, len_vl, valid_rids, valid_horses = create_sequences(valid_df, X_valid, y_valid, sup_valid)
+    test_seq,  test_lab,  test_sup,  test_msk,  len_ts, test_rids,  test_horses  = create_sequences(test_df,  X_test,  y_test,  sup_test)
 
-    max_seq_len = max(max_seq_len_train, max_seq_len_valid, max_seq_len_test)
+    max_seq_len = max(len_tr, len_vl, len_ts)
 
-    # パディング揃え
-    def pad_sequences(sequences, labels, masks, rids_seq, horses_seq, seq_len_target):
-        feature_dim = sequences[0].shape[1]
-        new_seqs, new_labs, new_masks, new_rids, new_horses = [], [], [], [], []
-        for feat, lab, m, r_arr, h_arr in zip(sequences, labels, masks, rids_seq, horses_seq):
-            cur_len = len(feat)
-            if cur_len < seq_len_target:
-                pad_len = seq_len_target - cur_len
-                feat = np.vstack([feat, np.zeros((pad_len, feature_dim))])
-                pad_label = np.zeros((pad_len, 2), dtype=float)
-                lab = np.concatenate([lab, pad_label], axis=0)
+    # さらにパディング長を合わせる（既に同じはずだが、念のため関数化可）
+    # ここでは省略
 
-                m = m + [False]*pad_len
-
-                rid_pad = np.full((pad_len,), fill_value=-1, dtype=r_arr.dtype)
-                h_pad   = np.full((pad_len,), fill_value=-1, dtype=h_arr.dtype)
-                r_arr   = np.concatenate([r_arr, rid_pad])
-                h_arr   = np.concatenate([h_arr, h_pad])
-
-            new_seqs.append(feat)
-            new_labs.append(lab)
-            new_masks.append(m)
-            new_rids.append(r_arr)
-            new_horses.append(h_arr)
-        return new_seqs, new_labs, new_masks, new_rids, new_horses
-
-    train_seq, train_lab, train_mask, train_rids_seq, train_horses_seq = \
-        pad_sequences(train_seq, train_lab, train_mask, train_rids_seq, train_horses_seq, max_seq_len)
-    valid_seq, valid_lab, valid_mask, valid_rids_seq, valid_horses_seq = \
-        pad_sequences(valid_seq, valid_lab, valid_mask, valid_rids_seq, valid_horses_seq, max_seq_len)
-    test_seq,  test_lab,  test_mask,  test_rids_seq,  test_horses_seq  = \
-        pad_sequences(test_seq,  test_lab,  test_mask,  test_rids_seq,  test_horses_seq,  max_seq_len)
-
-    # cat_unique
+    # cat_unique dict
     cat_unique = {}
     for c in cat_cols:
-        cat_unique[c] = len(train_df[c].unique()) + 1  # +1 はUNKぶん
+        cat_unique[c] = len(train_df[c].unique()) + 1
 
-    # 数値次元: (other + horsePCA + jockeyPCA)
-    actual_num_dim = train_other_scaled.shape[1] + train_horse_pca.shape[1] + train_jockey_pca.shape[1]
+    # Dataset
+    train_dataset = HorseRaceDatasetDiffBCE(train_seq, train_lab, train_sup, train_msk, train_rids, train_horses)
+    valid_dataset = HorseRaceDatasetDiffBCE(valid_seq, valid_lab, valid_sup, valid_msk, valid_rids, valid_horses)
+    test_dataset  = HorseRaceDatasetDiffBCE(test_seq,  test_lab,  test_sup,  test_msk,  test_rids,  test_horses)
 
-    train_dataset = HorseRaceDataset(train_seq, train_lab, train_mask, train_rids_seq, train_horses_seq)
-    valid_dataset = HorseRaceDataset(valid_seq, valid_lab, valid_mask, valid_rids_seq, valid_horses_seq)
-    test_dataset  = HorseRaceDataset(test_seq,  test_lab,  test_mask,  test_rids_seq,  test_horses_seq)
+    # 数値次元 (other + PCA horse + PCA jockey)
+    actual_num_dim = other_train_arr.shape[1] + horse_train_pca.shape[1] + jockey_train_pca.shape[1]
+    total_feature_dim = X_train.shape[1]
 
-    total_feature_dim = X_train.shape[1]  # カテゴリ + 数値(=other+pca)
-    return (
-        train_dataset, valid_dataset, test_dataset,
-        cat_cols, cat_unique, max_seq_len,
-        pca_dim_horse, pca_dim_jockey,  # PCA構成
-        actual_num_dim,
-        df,  # 何か後処理に使いたい場合
-        cat_cols, num_cols,  # debugging
-        pca_horse_target_cols, pca_jockey_target_cols, other_num_cols,
-        scaler_horse, scaler_jockey, scaler_other,
-        pca_model_horse, pca_model_jockey, total_feature_dim, id_col,
-        train_df # train部分DF (何か使う場合)
-    )
+    return (train_dataset, valid_dataset, test_dataset,
+            cat_cols, cat_unique, max_seq_len,
+            actual_num_dim,
+            pca_model_horse, pca_model_jockey, scaler_horse, scaler_jockey, scaler_other,
+            df,  # 全体DF
+            total_feature_dim)
 
-# =====================================================
-# Transformerの学習 (期待値2タスク)
-# =====================================================
-def run_training_ev(
+########################################
+# 4) 学習ルーチン (BCE + 差分)
+########################################
+def run_training_diff_bce(
     data_path=DATA_PATH,
-    pred_path = PRED_PATH,
-    fukusho_path = FUKUSHO_PATH,
-    id_col="race_id",
+    pred_path=PRED_PATH,
     rank_col="着順",
-    tansho_col="単勝",
-    fukusho_col="複勝",
+    pop_col="単勝",
+    id_col="race_id",
+    test_ratio=0.1,
+    valid_ratio=0.1,
+    pca_dim_horse=50,
+    pca_dim_jockey=50,
     batch_size=256,
     lr=0.001,
     num_epochs=50,
-    pca_dim_horse=50,
-    pca_dim_jockey=50,
-    test_ratio=0.1,
-    valid_ratio=0.1,
     d_model=128,
     nhead=8,
     num_layers=6,
-    dropout=0.1,
+    dropout=0.15,
     weight_decay=1e-5,
     patience=10
 ):
-    """
-    1) prepare_data_for_ev() でデータセット作成
-    2) HorseTransformer で (単勝期待値, 複勝期待値)を回帰学習
-    3) テストで評価
-    """
-    # 1) データ用意
+    # ===== 1) データセット作成 =====
     (train_dataset, valid_dataset, test_dataset,
      cat_cols, cat_unique, max_seq_len,
-     pca_dim_horse, pca_dim_jockey,
      actual_num_dim,
-     df_all,
-     _, _, 
-     _, _, _,
-     scaler_horse, scaler_jockey, scaler_other,
      pca_model_horse, pca_model_jockey,
-     total_feature_dim, id_col,
-     train_df) = prepare_data_for_ev(
+     scaler_horse, scaler_jockey, scaler_other,
+     df_all,
+     total_feature_dim) = prepare_data_diff_bce(
         data_path=data_path,
         pred_path=pred_path,
-        fukusho_path=fukusho_path,
-        id_col=id_col,
         rank_col=rank_col,
-        tansho_col=tansho_col,
-        fukusho_col=fukusho_col,
-        pca_dim_horse=pca_dim_horse,
-        pca_dim_jockey=pca_dim_jockey,
+        pop_col=pop_col,
+        id_col=id_col,
         test_ratio=test_ratio,
-        valid_ratio=valid_ratio
+        valid_ratio=valid_ratio,
+        pca_dim_horse=pca_dim_horse,
+        pca_dim_jockey=pca_dim_jockey
     )
 
-    # DataLoader
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
     test_loader  = DataLoader(test_dataset,  batch_size=batch_size, shuffle=False)
 
-    # 2) モデル構築
+    # ===== 2) モデル準備 =====
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = HorseTransformer(
+    model = HorseTransformerDiffBCE(
         cat_unique=cat_unique,
         cat_cols=cat_cols,
         max_seq_len=max_seq_len,
@@ -637,71 +537,88 @@ def run_training_ev(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
-    # why: 回帰なので MSELoss
-    criterion = nn.MSELoss(reduction='none')
 
-    # 早期終了用
+    # 注意: PyTorch標準の BCEWithLogitsLoss は "logits (未シグモイド) → シグモイド" を内蔵するが、
+    #       今回は "prob = clamp( base_support + diff, 0,1 )" を使うため、自作で実装する。
+    #       つまり "loss = -[y log(prob) + (1-y) log(1-prob)]" をマスクつきで計算する。
+    def custom_bce_loss(diff_outputs, base_supports, labels, masks):
+        """
+        diff_outputs: (batch, seq_len, 1) => 差分(モデル出力)
+        base_supports:(batch, seq_len)    => ベース支持率(0～1)
+        labels:       (batch, seq_len)    => 0/1
+        masks:        (batch, seq_len)    => True=有効
+        """
+        # === ここから修正箇所 ===
+        diff_outputs = diff_outputs.squeeze(-1)  # (batch, seq_len)
+        diff_sig = torch.sigmoid(diff_outputs)   # 1) 差分出力に sigmoid を適用
+        pred_prob = base_supports + diff_sig     # 2) ベース支持率に足し合わせる
+        pred_prob = torch.clamp(pred_prob, 0.0, 1.0)  # 3) 最終的に [0,1] にクリップ
+        # === ここまで修正箇所 ===
+
+        eps = 1e-7
+        bce = - (labels * torch.log(pred_prob + eps) + (1 - labels)*torch.log(1 - pred_prob + eps))
+        bce = bce * masks  # pad部分は0に
+        loss = bce.sum() / (masks.sum() + eps)
+        return loss
+
+    # 早期終了
     best_model_wts = copy.deepcopy(model.state_dict())
     best_loss = float('inf')
     epochs_no_improve = 0
 
-    print("===== Training Start =====")
-    for epoch in range(num_epochs):
-        # --------------------------
-        # Train
-        # --------------------------
-        model.train()
-        total_loss_train = 0.0
-        total_count_train= 0
+    print("=== Start Training: Diff + BCE ===")
+    train_loss_history = []
+    valid_loss_history = []
 
-        for sequences, labels, masks, _, _ in train_loader:
+    # ===== 3) 学習ループ =====
+    for epoch in range(num_epochs):
+        # --- train ---
+        model.train()
+        sum_loss_train = 0.0
+        count_train = 0
+
+        for sequences, labels, base_sups, masks, _, _ in train_loader:
             sequences = sequences.to(device)
             labels    = labels.to(device)
+            base_sups = base_sups.to(device)
             masks     = masks.to(device)
 
             optimizer.zero_grad()
-            outputs = model(sequences, src_key_padding_mask=masks)  # (batch, seq_len, 2)
-            # MSELoss
-            loss_raw = criterion(outputs, labels)  # shape: (batch, seq_len, 2)
+            diff_out = model(sequences, src_key_padding_mask=masks)  # (batch, seq_len, 1)
 
-            # masks: True=実データ、False=pad.  -> ここではsrc_key_padding_mask=masks で
-            # Transformer内部がパディングを除外するが、Loss側でも除外したい場合は
-            # ちゃんと使う(本例では ~masks を使うとPad部がFalse->0になる)
-            valid_mask_3d = masks.unsqueeze(-1).expand_as(loss_raw)  # shape: (batch, seq_len, 2)
-            loss = (loss_raw * valid_mask_3d).sum() / valid_mask_3d.sum()
+            loss = custom_bce_loss(diff_out, base_sups, labels, masks)
             loss.backward()
             optimizer.step()
 
-            total_loss_train += loss.item()
-            total_count_train += 1
+            sum_loss_train += loss.item()
+            count_train += 1
 
         scheduler.step()
-        avg_train_loss = total_loss_train / max(total_count_train, 1)
+        avg_train_loss = sum_loss_train / max(count_train,1)
 
-        # --------------------------
-        # Validation
-        # --------------------------
+        # --- valid ---
         model.eval()
-        total_loss_val = 0.0
-        total_count_val= 0
+        sum_loss_valid = 0.0
+        count_valid = 0
         with torch.no_grad():
-            for sequences, labels, masks, _, _ in valid_loader:
+            for sequences, labels, base_sups, masks, _, _ in valid_loader:
                 sequences = sequences.to(device)
                 labels    = labels.to(device)
+                base_sups = base_sups.to(device)
                 masks     = masks.to(device)
 
-                outputs = model(sequences, src_key_padding_mask=masks)
-                loss_raw = criterion(outputs, labels)
-                valid_mask_3d = masks.unsqueeze(-1).expand_as(loss_raw)
-                loss_val = (loss_raw * valid_mask_3d).sum() / valid_mask_3d.sum()
+                diff_out = model(sequences, src_key_padding_mask=masks)
+                loss_val = custom_bce_loss(diff_out, base_sups, labels, masks)
+                sum_loss_valid += loss_val.item()
+                count_valid += 1
 
-                total_loss_val += loss_val.item()
-                total_count_val += 1
+        avg_valid_loss = sum_loss_valid / max(count_valid,1)
 
-        avg_valid_loss = total_loss_val / max(total_count_val, 1)
+        train_loss_history.append(avg_train_loss)
+        valid_loss_history.append(avg_valid_loss)
 
-        print(f"Epoch [{epoch+1}/{num_epochs}]  "
-              f"TrainLoss: {avg_train_loss:.4f}  ValidLoss: {avg_valid_loss:.4f}")
+        print(f"[Epoch {epoch+1}/{num_epochs}]  "
+              f"TrainLoss = {avg_train_loss:.4f}, ValidLoss = {avg_valid_loss:.4f}")
 
         # 早期終了
         if avg_valid_loss < best_loss:
@@ -710,101 +627,121 @@ def run_training_ev(
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
-
         if epochs_no_improve >= patience:
             print("Early stopping triggered.")
             break
 
-    # bestモデルを読み込み
+    # 学習終了
+    print("=== Training Finished ===")
     model.load_state_dict(best_model_wts)
-    print("===== Training Finished =====")
 
-    # 3) テスト評価
-    def evaluate_mse(loader, model):
+    # ロス推移可視化
+    plt.figure(figsize=(8,5))
+    plt.plot(train_loss_history, label="Train Loss")
+    plt.plot(valid_loss_history, label="Valid Loss")
+    plt.title("Loss Curve (Diff+BCE)")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.show()
+
+    # ===== 4) 推論関数 =====
+    def predict_prob(loader, model):
+        """
+        モデル出力(差分)と、base_supportを足した確率を返す
+        """
         model.eval()
-        total_loss = 0.0
-        count = 0
-        preds_list = []
-        labels_list= []
-        masks_list = []
-        rids_list  = []
-        hnums_list = []
-
+        all_probs = []
+        all_labels= []
+        all_diffs = []
+        all_rids  = []
+        all_hnums = []
         with torch.no_grad():
-            for sequences, labels, masks, rids, hnums in loader:
+            for sequences, labels, base_sups, masks, rids, hnums in loader:
                 sequences = sequences.to(device)
                 labels    = labels.to(device)
+                base_sups = base_sups.to(device)
                 masks     = masks.to(device)
 
-                outputs = model(sequences, src_key_padding_mask=masks)  # (batch, seq_len, 2)
-                loss_raw = criterion(outputs, labels)
-                valid_mask_3d = masks.unsqueeze(-1).expand_as(loss_raw)
-                loss_val = (loss_raw * valid_mask_3d).sum() / valid_mask_3d.sum()
+                diff_out = model(sequences, src_key_padding_mask=masks).squeeze(-1) # (batch, seq_len)
+                diff_sig = torch.sigmoid(diff_out)
+                pred_prob = base_sups + diff_sig
+                pred_prob = torch.clamp(pred_prob, 0, 1)
 
-                total_loss += loss_val.item()
-                count += 1
+                # 有効部分だけ取り出し
+                masks_np = masks.cpu().numpy()
+                prob_np  = pred_prob.cpu().numpy()
+                diff_np  = diff_out.cpu().numpy()
+                labels_np= labels.cpu().numpy()
+                rids_np  = rids.cpu().numpy()
+                hnums_np = hnums.cpu().numpy()
 
-                # 予測値, 真値を "有効な部分" だけ取り出してリスト化
-                mask_cpu = masks.cpu().numpy().astype(bool)
-                outputs_cpu = outputs.cpu().numpy()
-                labels_cpu  = labels.cpu().numpy()
-                rids_cpu    = rids.cpu().numpy()
-                hnums_cpu   = hnums.cpu().numpy()
-
-                for b in range(outputs_cpu.shape[0]):
-                    valid_len = mask_cpu[b].sum()
-                    preds_list.append(outputs_cpu[b, :valid_len, :])   # shape: (valid_len, 2)
-                    labels_list.append(labels_cpu[b, :valid_len, :])    # shape: (valid_len, 2)
-                    rids_list.append(rids_cpu[b, :valid_len])
-                    hnums_list.append(hnums_cpu[b, :valid_len])
-                    masks_list.append(mask_cpu[b,:valid_len])
-
-        avg_loss = total_loss / max(count,1)
+                B, L = masks_np.shape
+                for b in range(B):
+                    valid_len = masks_np[b].sum()
+                    all_probs.append(prob_np[b,:valid_len])
+                    all_labels.append(labels_np[b,:valid_len])
+                    all_diffs.append(diff_np[b,:valid_len])
+                    all_rids.append(rids_np[b,:valid_len])
+                    all_hnums.append(hnums_np[b,:valid_len])
 
         # 結合
-        preds_concat = np.concatenate(preds_list, axis=0)
-        labels_concat= np.concatenate(labels_list, axis=0)
-        rids_concat  = np.concatenate(rids_list, axis=0)
-        hnums_concat = np.concatenate(hnums_list, axis=0)
+        probs_concat  = np.concatenate(all_probs, axis=0)
+        labels_concat = np.concatenate(all_labels, axis=0)
+        diffs_concat  = np.concatenate(all_diffs, axis=0)
+        rids_concat   = np.concatenate(all_rids, axis=0)
+        hnums_concat  = np.concatenate(all_hnums, axis=0)
 
-        return avg_loss, preds_concat, labels_concat, rids_concat, hnums_concat
+        return probs_concat, labels_concat, diffs_concat, rids_concat, hnums_concat
 
-    test_mse, test_preds, test_labels, test_rids, test_hnums = evaluate_mse(test_loader, model)
-    print(f"Test MSE: {test_mse:.4f}")
+    # ===== テスト評価 =====
+    test_probs, test_labels, test_diffs, test_rids, test_hnums = predict_prob(test_loader, model)
 
-    # 結果をDataFrame化して保存
-    # test_preds[:, 0] = 単勝期待値予測, test_preds[:, 1] = 複勝期待値予測
-    # test_labels[:,0] = 単勝期待値実測, test_labels[:,1] = 複勝期待値実測
-    result_df = pd.DataFrame({
+    # BCE (最終評価)
+    eps=1e-9
+    test_bce = - ( test_labels*np.log(test_probs+eps) + (1-test_labels)*np.log(1-test_probs+eps) )
+    test_loss = np.mean(test_bce)
+    print(f"Test BCE Loss = {test_loss:.4f}")
+
+    # 結果DataFrame
+    test_result_df = pd.DataFrame({
         "race_id": test_rids.astype(int),
-        "馬番": test_hnums.astype(int),
-        "pred_tansho_ev": test_preds[:,0],
-        "pred_fukusho_ev":test_preds[:,1],
-        "true_tansho_ev": test_labels[:,0],
-        "true_fukusho_ev":test_labels[:,1],
+        "馬番":    test_hnums.astype(int),
+        "label_win": test_labels.astype(int),       # 1=勝ち,0=負け
+        "base_support": 0.0,  # 後で埋める用
+        "diff_out":   test_diffs,                  # 差分
+        "pred_prob":  test_probs,                  # 予測確率(支持率 + 差分)
     })
-    result_df.to_csv(SAVE_PATH_PRED, index=False)
+    # base_support を再取得したい場合、Datasetやdf_all と再マージでもOK:
+    # ここでは簡単に省略: (本来はpredict時にも保存しておくか、あとで再マージするとよい)
 
-    # 追加で train+valid+test 全部まとめた予測が欲しい場合:
-    # 例として、ConcatDatasetを使って一括評価
+    # 保存
+    test_result_df.to_csv(SAVE_PATH_PRED, index=False)
+
+    # ===== Full(=train+valid+test) の推論 =====
     full_dataset = ConcatDataset([train_dataset, valid_dataset, test_dataset])
     full_loader  = DataLoader(full_dataset, batch_size=batch_size, shuffle=False)
-    full_mse, full_preds, full_labels, full_rids, full_hnums = evaluate_mse(full_loader, model)
-    print(f"Full MSE: {full_mse:.4f}")
+    full_probs, full_labels, full_diffs, full_rids, full_hnums = predict_prob(full_loader, model)
+    full_bce = - ( full_labels*np.log(full_probs+eps) + (1-full_labels)*np.log(1-full_probs+eps) )
+    full_loss = np.mean(full_bce)
+    print(f"Full BCE Loss = {full_loss:.4f}")
 
-    full_pred_df = pd.DataFrame({
+    full_result_df = pd.DataFrame({
         "race_id": full_rids.astype(int),
-        "馬番": full_hnums.astype(int),
-        "pred_tansho_ev": full_preds[:,0],
-        "pred_fukusho_ev":full_preds[:,1],
-        "true_tansho_ev": full_labels[:,0],
-        "true_fukusho_ev":full_labels[:,1],
+        "馬番":    full_hnums.astype(int),
+        "label_win": full_labels.astype(int),
+        "diff_out":  full_diffs,
+        "pred_prob": full_probs,
     })
-    full_pred_df.to_csv(SAVE_PATH_FULL_PRED, index=False)
+    full_result_df.to_csv(SAVE_PATH_FULL_PRED, index=False)
 
-    # 4) モデル保存
+    # ===== 5) モデル保存 =====
+    if not os.path.exists(MODEL_SAVE_DIR):
+        os.makedirs(MODEL_SAVE_DIR)
+
     with open(SAVE_PATH_MODEL, "wb") as f:
         pickle.dump(model.state_dict(), f)
+
     if pca_model_horse is not None:
         with open(SAVE_PATH_PCA_MODEL_HORSE, "wb") as f:
             pickle.dump(pca_model_horse, f)
@@ -818,124 +755,50 @@ def run_training_ev(
     with open(SAVE_PATH_SCALER_OTHER, "wb") as f:
         pickle.dump(scaler_other, f)
 
-    print("Model saved.")
+    print("Model & preprocessors saved.")
 
-    # 結果の可視化
-    plot_ev_scatter(result_df)
-    calc_positive_ev_gain(result_df)
-    plot_error_distribution(result_df)
-    plot_cumulative_return(result_df, is_tansho=True)   # 単勝
-    plot_cumulative_return(result_df, is_tansho=False)  # 複勝
+    # ===== 6) 可視化例 =====
+    # 差分 > 0 の馬（モデルが「市場より高く評価」）についての的中率や収益などを簡易集計
+    analyze_diff_results(test_result_df)
 
     return 0
 
-def plot_ev_scatter(result_df):
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12,6))
 
-    # 単勝散布図
-    axes[0].scatter(result_df["true_tansho_ev"], result_df["pred_tansho_ev"], alpha=0.3)
-    axes[0].set_title("Tansho EV: True vs Pred")
-    axes[0].set_xlabel("True Tansho EV")
-    axes[0].set_ylabel("Predicted Tansho EV")
-    # 対角線
-    min_val = min(result_df["true_tansho_ev"].min(), result_df["pred_tansho_ev"].min())
-    max_val = max(result_df["true_tansho_ev"].max(), result_df["pred_tansho_ev"].max())
-    axes[0].plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--')
+def analyze_diff_results(df_result):
+    """
+    差分>0 の馬だけを集めて、モデルが"市場より勝つ確率高い"と見た馬の実際の勝率を見たり、
+    回収率を可視化したりする例。
+    ここでは簡易的に "ラベル=1 の割合" を計算。
+    """
+    df_positive = df_result[df_result["diff_out"]>0]
+    win_rate = df_positive["label_win"].mean()
+    print(f"[差分>0] の馬数: {len(df_positive)}, 実際の勝率: {win_rate:.4f}")
 
-    # 複勝散布図
-    axes[1].scatter(result_df["true_fukusho_ev"], result_df["pred_fukusho_ev"], alpha=0.3)
-    axes[1].set_title("Fukusho EV: True vs Pred")
-    axes[1].set_xlabel("True Fukusho EV")
-    axes[1].set_ylabel("Predicted Fukusho EV")
-    min_val = min(result_df["true_fukusho_ev"].min(), result_df["pred_fukusho_ev"].min())
-    max_val = max(result_df["true_fukusho_ev"].max(), result_df["pred_fukusho_ev"].max())
-    axes[1].plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--')
-
-    plt.tight_layout()
-    plt.show()
-
-def calc_positive_ev_gain(result_df):
-    # 単勝で予測がプラスの馬
-    df_tansho_positive = result_df[result_df["pred_tansho_ev"] > 0]
-    total_tansho_real = df_tansho_positive["true_tansho_ev"].sum()
-
-    # 複勝で予測がプラスの馬
-    df_fukusho_positive = result_df[result_df["pred_fukusho_ev"] > 0]
-    total_fukusho_real = df_fukusho_positive["true_fukusho_ev"].sum()
-
-    print("【予測EVが+のレコードについて】")
-    print(f"- 単勝: True EV 合計 = {total_tansho_real:.2f}")
-    print(f"- 複勝: True EV 合計 = {total_fukusho_real:.2f}")
-
-def plot_error_distribution(result_df):
-    # 単勝誤差
-    tansho_error = result_df["true_tansho_ev"] - result_df["pred_tansho_ev"]
-    # 複勝誤差
-    fukusho_error = result_df["true_fukusho_ev"] - result_df["pred_fukusho_ev"]
-
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12,5))
-
-    axes[0].hist(tansho_error, bins=50, alpha=0.7, color='b')
-    axes[0].set_title("Tansho EV Residuals (True - Pred)")
-    axes[0].set_xlabel("Residual Value")
-    axes[0].set_ylabel("Count")
-
-    axes[1].hist(fukusho_error, bins=50, alpha=0.7, color='g')
-    axes[1].set_title("Fukusho EV Residuals (True - Pred)")
-    axes[1].set_xlabel("Residual Value")
-    axes[1].set_ylabel("Count")
-
-    plt.tight_layout()
-    plt.show()
-
-def plot_cumulative_return(result_df, is_tansho=True):
-    # 単勝 or 複勝
-    pred_col = "pred_tansho_ev" if is_tansho else "pred_fukusho_ev"
-    true_col = "true_tansho_ev" if is_tansho else "true_fukusho_ev"
-
-    # 予測EVの降順に並べ替え
-    df_sorted = result_df.sort_values(by=pred_col, ascending=False).reset_index(drop=True)
-    # 実際のEVの累積和(買い目ごとに-100円している想定なので、df[true_col] そのものが収益)
-    cumsum_true = df_sorted[true_col].cumsum()
-    # 購入レース数に応じて何円使ったか = 100円ずつ × レース数
-    num_races = np.arange(1, len(df_sorted) + 1)
-    cost = 100 * num_races
-    # 回収率 = 累積収益 / 累積コスト
-    cumsum_return_rate = cumsum_true / cost
-
-    plt.figure(figsize=(8,5))
-    plt.plot(num_races, cumsum_return_rate, marker='o', markersize=2, linestyle='-')
-    plt.axhline(y=1.0, color='red', linestyle='--')  # 回収率100%ライン
-    title_name = "Tansho" if is_tansho else "Fukusho"
-    plt.title(f"Cumulative Return Rate ({title_name})")
-    plt.xlabel("Number of Bets (in descending order of predicted EV)")
-    plt.ylabel("Cumulative Return Rate")
-    plt.ylim(0, 2)  # 適宜調整
+    # プロット例: diff_out vs pred_prob
+    plt.figure(figsize=(6,5))
+    plt.scatter(df_result["diff_out"], df_result["pred_prob"], alpha=0.3)
+    plt.title("Difference vs Predicted Probability")
+    plt.xlabel("Difference (model output)")
+    plt.ylabel("Predicted Probability (base+diff)")
     plt.grid(True)
     plt.show()
 
-# 実行例
+
+# ===== メイン =====
 if __name__ == "__main__":
-    model, test_result, full_result = run_training_ev(
+    run_training_diff_bce(
         data_path=DATA_PATH,
-        id_col="race_id",
+        pred_path=PRED_PATH,
         rank_col="着順",
-        tansho_col="単勝",
-        fukusho_col="複勝",
-        batch_size=128,
-        lr=0.0005,
-        num_epochs=30,
-        pca_dim_horse=50,
-        pca_dim_jockey=50,
-        test_ratio=0.15,
+        pop_col="単勝",
+        test_ratio=0.1,
         valid_ratio=0.1,
-        d_model=128,
+        batch_size=64,
+        lr=0.0005,
+        num_epochs=20,
+        d_model=64,
         nhead=4,
         num_layers=4,
         dropout=0.1,
-        weight_decay=1e-5,
         patience=5
     )
-
-    print("Done. Test shape:", test_result.shape)
-    print("Done. Full shape:", full_result.shape)
