@@ -550,9 +550,9 @@ def run_training_diff_bce(
         """
         # === ここから修正箇所 ===
         diff_outputs = diff_outputs.squeeze(-1)  # (batch, seq_len)
-        diff_sig = torch.sigmoid(diff_outputs)   # 1) 差分出力に sigmoid を適用
-        pred_prob = base_supports + diff_sig     # 2) ベース支持率に足し合わせる
-        pred_prob = torch.clamp(pred_prob, 0.0, 1.0)  # 3) 最終的に [0,1] にクリップ
+        eps = 1e-7
+        logit_bs = torch.logit(base_supports, eps=eps)  # base_support が 0 や 1 に近いときのため epsilon考慮
+        pred_prob = torch.sigmoid(logit_bs + diff_outputs)
         # === ここまで修正箇所 ===
 
         eps = 1e-7
@@ -664,9 +664,10 @@ def run_training_diff_bce(
                 masks     = masks.to(device)
 
                 diff_out = model(sequences, src_key_padding_mask=masks).squeeze(-1) # (batch, seq_len)
-                diff_sig = torch.sigmoid(diff_out)
-                pred_prob = base_sups + diff_sig
-                pred_prob = torch.clamp(pred_prob, 0, 1)
+                eps = 1e-7
+                logit_bs = torch.logit(base_sups, eps=eps)  # base_support が 0 や 1 に近いときのため epsilon考慮
+                pred_prob = torch.sigmoid(logit_bs + diff_out)
+
 
                 # 有効部分だけ取り出し
                 masks_np = masks.cpu().numpy()
