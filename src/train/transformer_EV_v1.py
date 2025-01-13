@@ -264,7 +264,7 @@ def prepare_data_diff_bce(
     # ID系・リーク系除外
     # 必要に応じてleakage_colsを定義
     leakage_cols = [
-            '斤量','タイム','着差','単勝','上がり3F','馬体重','人気',
+            '斤量','タイム','着差','単勝','上がり3F','馬体重','人気','着順',
             'horse_id','jockey_id',
             'trainer_id',
             '順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
@@ -489,13 +489,13 @@ def run_training_diff_bce(
     valid_ratio=0.1,
     pca_dim_horse=50,
     pca_dim_jockey=50,
-    batch_size=256,
+    batch_size=64,
     lr=0.001,
-    num_epochs=50,
+    num_epochs=5,
     d_model=128,
     nhead=8,
     num_layers=6,
-    dropout=0.15,
+    dropout=0.10,
     weight_decay=1e-5,
     patience=10
 ):
