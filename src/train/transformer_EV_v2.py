@@ -373,7 +373,7 @@ def prepare_data_diff_bce(
             '3100m','3200m','3300m','3400m','3500m','3600m','horse_ability',
             'is_win',
             'base_support',
-            'label_top1', 'label_top3', 'label_top5', 'label_pop1', 'label_pop3', 'label_pop3'
+            'label_top1', 'label_top3', 'label_top5', 'label_pop1', 'label_pop3', 'label_pop5'
         ]
     cat_cols = [c for c in cat_cols_all if c not in leakage_cols and c not in [id_col]]
     num_cols = [c for c in num_cols_all if c not in leakage_cols and c not in [id_col]]
