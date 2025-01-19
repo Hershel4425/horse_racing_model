@@ -540,12 +540,13 @@ def run_training_diff_bce(
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.CyclicLR(
+    total_steps = len(train_loader)*num_epochs
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
                                             optimizer,
-                                            base_lr=1e-4,    # 下限LR
-                                            max_lr=1e-2,     # 上限LR
-                                            step_size_up=200,
-                                            mode='triangular'
+                                            max_lr=1e-2,          # ピーク時の最大LR
+                                            total_steps=total_steps,
+                                            pct_start=0.3,        # どのタイミングでピークになるか(全体の0.3)
+                                            anneal_strategy='cos' # 後半の下がり方(コサイン)
                                         )
 
     # 注意: PyTorch標準の BCEWithLogitsLoss は "logits (未シグモイド) → シグモイド" を内蔵するが、
@@ -815,7 +816,7 @@ def evaluate_model_performance(df):
     
     # --- 1) AUC, BCE, Brierスコア ---
     auc_value = roc_auc_score(df["label_win"], df["pred_prob"])
-    bce_value = log_loss(df["label_win"], df["pred_prob"], eps=1e-15)
+    bce_value = log_loss(df["label_win"], np.clip(df["pred_prob"], 1e-15, 1 - 1e-15))
     brier_value = brier_score_loss(df["label_win"], df["pred_prob"])
     
     print(f"AUC = {auc_value:.4f}")
@@ -860,7 +861,7 @@ def evaluate_model_performance(df):
 
     # 3-3) フェアオッズ戦略: fair_odds = 1 / pred_prob で計算し、
     #      実オッズの方が割高(> fair_odds)なら買う
-    df["fair_odds"] = 1.0 / df["pred_prob"].clip(lower=1e-8)
+    df["fair_odds"] = 0.8 / df["pred_prob"].clip(lower=1e-8)
     df_fair = df[df["win_odds"] > df["fair_odds"]].copy()
     stake_fair = len(df_fair)*100
     returned_fair = df_fair.apply(lambda row: row["win_odds"]*100 if row["label_win"]==1 else 0, axis=1).sum()

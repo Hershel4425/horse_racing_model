@@ -565,12 +565,13 @@ def run_train_time_split(
         ).to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.CyclicLR(
+        total_steps = len(train_loader)*num_epochs
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
                                             optimizer,
-                                            base_lr=1e-4,    # 下限LR
-                                            max_lr=1e-2,     # 上限LR
-                                            step_size_up=200,
-                                            mode='triangular'
+                                            max_lr=1e-2,          # ピーク時の最大LR
+                                            total_steps=total_steps,
+                                            pct_start=0.3,        # どのタイミングでピークになるか(全体の0.3)
+                                            anneal_strategy='cos' # 後半の下がり方(コサイン)
                                         )
         criterion = nn.BCEWithLogitsLoss(reduction='none')
 
