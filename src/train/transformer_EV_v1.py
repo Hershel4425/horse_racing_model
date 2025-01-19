@@ -543,7 +543,7 @@ def run_training_diff_bce(
     total_steps = len(train_loader)*num_epochs
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
                                             optimizer,
-                                            max_lr=1e-2,          # ピーク時の最大LR
+                                            max_lr=1e-1,          # ピーク時の最大LR
                                             total_steps=total_steps,
                                             pct_start=0.3,        # どのタイミングでピークになるか(全体の0.3)
                                             anneal_strategy='cos' # 後半の下がり方(コサイン)
