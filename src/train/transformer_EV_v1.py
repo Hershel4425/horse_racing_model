@@ -11,6 +11,8 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+from sklearn.metrics import roc_auc_score, log_loss, brier_score_loss
+from sklearn.calibration import calibration_curve
 import copy
 import pickle
 import random
@@ -538,7 +540,13 @@ def run_training_diff_bce(
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.CyclicLR(
+                                            optimizer,
+                                            base_lr=1e-4,    # 下限LR
+                                            max_lr=1e-2,     # 上限LR
+                                            step_size_up=200,
+                                            mode='triangular'
+                                        )
 
     # 注意: PyTorch標準の BCEWithLogitsLoss は "logits (未シグモイド) → シグモイド" を内蔵するが、
     #       今回は "prob = clamp( base_support + diff, 0,1 )" を使うため、自作で実装する。
@@ -591,11 +599,11 @@ def run_training_diff_bce(
             loss = custom_bce_loss(diff_out, base_sups, labels, masks)
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
             sum_loss_train += loss.item()
             count_train += 1
 
-        scheduler.step()
         avg_train_loss = sum_loss_train / max(count_train,1)
 
         # --- valid ---
@@ -711,12 +719,19 @@ def run_training_diff_bce(
         "race_id": test_rids.astype(int),
         "馬番":    test_hnums.astype(int),
         "label_win": test_labels.astype(int),       # 1=勝ち,0=負け
-        "base_support": 0.0,  # 後で埋める用
         "diff_out":   test_diffs,                  # 差分
         "pred_prob":  test_probs,                  # 予測確率(支持率 + 差分)
     })
     # base_support を再取得したい場合、Datasetやdf_all と再マージでもOK:
-    # ここでは簡単に省略: (本来はpredict時にも保存しておくか、あとで再マージするとよい)
+    # 実オッズ列(ここでは "odds" とする)がある df_odds などがある想定
+    # race_id, 馬番 でくっつける
+    test_result_df = pd.merge(
+        test_result_df,
+        df_all[["race_id", "馬番", "単勝"]],  # 実際の単勝オッズが入ってる列
+        on=["race_id","馬番"],
+        how="left"
+    )
+    test_result_df.rename(columns={"単勝": "win_odds"}, inplace=True)
 
     # 保存
     test_result_df.to_csv(SAVE_PATH_PRED, index=False)
@@ -764,6 +779,9 @@ def run_training_diff_bce(
     # 差分 > 0 の馬（モデルが「市場より高く評価」）についての的中率や収益などを簡易集計
     analyze_diff_results(test_result_df)
 
+    # 収益確認
+    evaluate_model_performance(test_result_df)
+
     return 0
 
 
@@ -785,6 +803,69 @@ def analyze_diff_results(df_result):
     plt.ylabel("Predicted Probability (base+diff)")
     plt.grid(True)
     plt.show()
+
+def evaluate_model_performance(df):
+    """
+    df には最低限以下の列を想定:
+      - label_win: 1(勝ち) or 0(負け)
+      - pred_prob: モデルの予測確率(0~1)
+      - diff_out:  モデル出力の差分
+      - win_odds:  実際の単勝オッズ(馬券の払戻倍率)
+    """
+    
+    # --- 1) AUC, BCE, Brierスコア ---
+    auc_value = roc_auc_score(df["label_win"], df["pred_prob"])
+    bce_value = log_loss(df["label_win"], df["pred_prob"], eps=1e-15)
+    brier_value = brier_score_loss(df["label_win"], df["pred_prob"])
+    
+    print(f"AUC = {auc_value:.4f}")
+    print(f"BCE = {bce_value:.4f}")
+    print(f"Brier Score = {brier_value:.4f}")
+    
+    # --- 2) キャリブレーション(信頼度と実際の的中率の比較) ---
+    # 予測確率を0~1に分割して、平均予測と実際のラベル(=勝率)をプロット
+    prob_true, prob_pred = calibration_curve(df["label_win"], df["pred_prob"], n_bins=10)
+    plt.figure(figsize=(5,5))
+    plt.plot(prob_pred, prob_true, marker="o", label="Calibration")
+    plt.plot([0,1], [0,1], "--", color="gray", label="Perfect")
+    plt.title("Calibration Plot")
+    plt.xlabel("Predicted Probability")
+    plt.ylabel("True Probability")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # --- 3) 回収率シミュレーション ---
+    # 回収金額 = オッズ × 賭け金 (的中時)
+    # 賭け金を100円固定と仮定する例
+
+    # 3-1) diff>0 の馬だけ買う
+    df_diff_pos = df[df["diff_out"] > 0].copy()
+    stake_diff = len(df_diff_pos)*100
+    # label_win=1の馬だけ、オッズ×100円の払い戻し
+    returned_diff = df_diff_pos.apply(lambda row: row["win_odds"]*100 if row["label_win"]==1 else 0, axis=1).sum()
+    roi_diff_pos = returned_diff / stake_diff if stake_diff>0 else 0
+    print(f"[diff>0] 購入馬数: {len(df_diff_pos)}, ROI = {roi_diff_pos:.3f}")
+
+    # 3-2) レースごとに予測確率上位N頭だけ買う
+    topN = 5  # ここ変えて好きな頭数に
+    def pick_topN(group, n=topN):
+        return group.sort_values("pred_prob", ascending=False).head(n)
+
+    df_topN = df.groupby("race_id", group_keys=False).apply(pick_topN)
+    stake_topN = len(df_topN)*100
+    returned_topN = df_topN.apply(lambda row: row["win_odds"]*100 if row["label_win"]==1 else 0, axis=1).sum()
+    roi_topN = returned_topN / stake_topN if stake_topN>0 else 0
+    print(f"[top{topN} strategy] 購入馬数: {len(df_topN)}, ROI = {roi_topN:.3f}")
+
+    # 3-3) フェアオッズ戦略: fair_odds = 1 / pred_prob で計算し、
+    #      実オッズの方が割高(> fair_odds)なら買う
+    df["fair_odds"] = 1.0 / df["pred_prob"].clip(lower=1e-8)
+    df_fair = df[df["win_odds"] > df["fair_odds"]].copy()
+    stake_fair = len(df_fair)*100
+    returned_fair = df_fair.apply(lambda row: row["win_odds"]*100 if row["label_win"]==1 else 0, axis=1).sum()
+    roi_fair = returned_fair / stake_fair if stake_fair>0 else 0
+    print(f"[fairオッズより実オッズが高い馬] 購入馬数: {len(df_fair)}, ROI = {roi_fair:.3f}")
 
 
 # ===== メイン =====

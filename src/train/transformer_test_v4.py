@@ -565,7 +565,13 @@ def run_train_time_split(
         ).to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.CyclicLR(
+                                            optimizer,
+                                            base_lr=1e-4,    # 下限LR
+                                            max_lr=1e-2,     # 上限LR
+                                            step_size_up=200,
+                                            mode='triangular'
+                                        )
         criterion = nn.BCEWithLogitsLoss(reduction='none')
 
         # 早期終了用
@@ -586,6 +592,7 @@ def run_train_time_split(
                 masks = masks.to(device)
 
                 optimizer.zero_grad()
+                scheduler.step()
                 outputs = model(sequences, src_key_padding_mask=~masks)
                 loss_raw = criterion(outputs, labels)
                 valid_mask = masks.unsqueeze(-1).expand_as(loss_raw)
@@ -595,7 +602,6 @@ def run_train_time_split(
                 total_loss += loss.item()
                 total_count += 1
 
-            scheduler.step()
             avg_train_loss = total_loss / total_count if total_count > 0 else 0
 
             # --- valid ---
