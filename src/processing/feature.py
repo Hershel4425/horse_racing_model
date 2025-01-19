@@ -578,10 +578,14 @@ def create_flag_features_and_update(df):
         return df_
     
     def update_ratings_for_single_flag(df, flag, env):
+        """
+        同一レース内の全馬を TrueSkill で対戦させる。
+        ただし、実際にレーティングを更新するのは "flag == 1" の馬だけ。
+        """
+        # 辞書: horse_id → Rating
         horse_ratings = {}
         jockey_ratings = {}
-        
-        # 結果格納用配列
+
         n = len(df)
         horse_mu_array = np.zeros(n, dtype=np.float32)
         horse_sigma_array = np.zeros(n, dtype=np.float32)
@@ -595,7 +599,7 @@ def create_flag_features_and_update(df):
             idxs = race_groups.groups[race_id]
             idxs_sorted = idxs.sort_values()
 
-            # レース前のレーティングを格納
+            # -- レース前のレーティングを df に保存 --
             for i in idxs_sorted:
                 h_id = df.at[i, "horse_id"]
                 j_id = df.at[i, "jockey_id"]
@@ -603,50 +607,81 @@ def create_flag_features_and_update(df):
                     horse_ratings[h_id] = env.create_rating()
                 if j_id not in jockey_ratings:
                     jockey_ratings[j_id] = env.create_rating()
-                horse_mu_array[i] = horse_ratings[h_id].mu
+
+                horse_mu_array[i]   = horse_ratings[h_id].mu
                 horse_sigma_array[i] = horse_ratings[h_id].sigma
-                jockey_mu_array[i] = jockey_ratings[j_id].mu
+                jockey_mu_array[i]  = jockey_ratings[j_id].mu
                 jockey_sigma_array[i] = jockey_ratings[j_id].sigma
 
-            # レース結果で更新
-            group_flag_1 = df.loc[idxs_sorted, :][df.loc[idxs_sorted, flag] == 1]
-            participants_for_update_horse = []
-            participants_for_update_jockey = []
-            ranks_for_update_horse = []
-            ranks_for_update_jockey = []
-            indices_for_update_horse = []
-            indices_for_update_jockey = []
+            # -- レース参加馬 (全馬) を TrueSkill の対戦チームとして作成 --
+            participants_horse  = []
+            participants_jockey = []
+            ranks_horse  = []
+            ranks_jockey = []
 
-            for i2 in group_flag_1.index:
+            idx_list_horse  = []
+            idx_list_jockey = []
+
+            for i2 in idxs_sorted:
                 rank = df.at[i2, "着順"]
                 if pd.isna(rank):
+                    # 着順欠損ならスキップ
+                    participants_horse.append(None)  # ダミー
+                    ranks_horse.append(None)
+                    idx_list_horse.append(i2)
+                    participants_jockey.append(None)
+                    ranks_jockey.append(None)
+                    idx_list_jockey.append(i2)
                     continue
-                rank = int(rank) - 1
+
+                rank_int = int(rank) - 1
                 h_id = df.at[i2, "horse_id"]
                 j_id = df.at[i2, "jockey_id"]
 
-                participants_for_update_horse.append([horse_ratings[h_id]])
-                participants_for_update_jockey.append([jockey_ratings[j_id]])
-                ranks_for_update_horse.append(rank)
-                ranks_for_update_jockey.append(rank)
-                indices_for_update_horse.append(i2)
-                indices_for_update_jockey.append(i2)
+                participants_horse.append([horse_ratings[h_id]])
+                ranks_horse.append(rank_int)
+                idx_list_horse.append(i2)
 
-            if len(participants_for_update_horse) >= 2:
-                updated = env.rate(participants_for_update_horse, ranks=ranks_for_update_horse)
-                for x, row_idx in enumerate(indices_for_update_horse):
-                    h_id = df.at[row_idx, "horse_id"]
-                    horse_ratings[h_id] = updated[x][0]
+                participants_jockey.append([jockey_ratings[j_id]])
+                ranks_jockey.append(rank_int)
+                idx_list_jockey.append(i2)
 
-            if len(participants_for_update_jockey) >= 2:
-                updated_j = env.rate(participants_for_update_jockey, ranks=ranks_for_update_jockey)
-                for x, row_idx in enumerate(indices_for_update_jockey):
-                    j_id = df.at[row_idx, "jockey_id"]
-                    jockey_ratings[j_id] = updated_j[x][0]
+            # -- Horse の対戦結果で更新 (全馬を含む) --
+            #    → 更新結果を一時的に updated_ratings_horse に保持
+            if len(participants_horse) >= 2:
+                # TrueSkillでは、リスト内にNoneがあるとエラーになるので除去
+                valid_entries = [(team, rnk, idxv) for (team, rnk, idxv)
+                                in zip(participants_horse, ranks_horse, idx_list_horse)
+                                if team is not None and rnk is not None]
+                if len(valid_entries) >= 2:
+                    teams_horse, ranks_horse_, idxs_horse_ = zip(*valid_entries)
+                    updated_ratings_horse = env.rate(teams_horse, ranks=ranks_horse_)
 
-        col_mu_horse = f"競走馬レーティング_{flag}"
-        col_sigma_horse = f"競走馬レーティング_sigma_{flag}"
-        col_mu_jockey = f"騎手レーティング__{flag}"
+                    # 「フラグがある馬だけ」更新を反映
+                    for x, row_idx in enumerate(idxs_horse_):
+                        h_id = df.at[row_idx, "horse_id"]
+                        if df.at[row_idx, flag] == 1:
+                            # フラグ馬のみ更新を適用
+                            horse_ratings[h_id] = updated_ratings_horse[x][0]
+
+            # -- Jockey の対戦結果で更新 (全馬を含む) --
+            if len(participants_jockey) >= 2:
+                valid_entries_j = [(team, rnk, idxv) for (team, rnk, idxv)
+                                in zip(participants_jockey, ranks_jockey, idx_list_jockey)
+                                if team is not None and rnk is not None]
+                if len(valid_entries_j) >= 2:
+                    teams_jockey, ranks_jockey_, idxs_jockey_ = zip(*valid_entries_j)
+                    updated_ratings_jockey = env.rate(teams_jockey, ranks=ranks_jockey_)
+
+                    for x, row_idx in enumerate(idxs_jockey_):
+                        j_id = df.at[row_idx, "jockey_id"]
+                        if df.at[row_idx, flag] == 1:
+                            jockey_ratings[j_id] = updated_ratings_jockey[x][0]
+
+        # 結果列として df_result をまとめて返す
+        col_mu_horse     = f"競走馬レーティング_{flag}"
+        col_sigma_horse  = f"競走馬レーティング_sigma_{flag}"
+        col_mu_jockey    = f"騎手レーティング_{flag}"
         col_sigma_jockey = f"騎手レーティング_sigma_{flag}"
 
         df_result = pd.DataFrame({
