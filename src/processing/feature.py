@@ -1423,7 +1423,6 @@ def create_pedigree_feature(df):
             on='father_name',
             how='left'
         )
-        df_merged = df_merged.drop(columns = 'father_name')
 
         return df_merged
     
@@ -1442,14 +1441,14 @@ def create_pedigree_feature(df):
         df.loc[df['win_flag'] == 0, '距離'] = np.nan
 
         sire_dist = df.groupby('pedigree_0')['距離'].mean().reset_index()
-        sire_dist.columns = ['father_id','mean_win_dist']
+        sire_dist.columns = ['father_name','mean_win_dist']
 
         return sire_dist
     
     sire_dist = get_sire_distance_stats(df)
-    df = pd.merge(df, sire_dist, on='father_id', how='left')
+    df = pd.merge(df, sire_dist, on='father_name', how='left')
 
-    df = df.drop(columns = ['win_flag', 'rentaiflag', 'is_turf', 'is_dirt'])
+    df = df.drop(columns = ['win_flag', 'rentaiflag', 'is_turf', 'is_dirt', 'father_name'])
 
     print(f'処理後のデータフレーム：{df.shape}')
     display(df.head(1))
