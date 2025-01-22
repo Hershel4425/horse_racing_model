@@ -30,7 +30,7 @@ DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transformer_diffBCE/{DATE_STRING}")
 
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
-PRED_PATH  = os.path.join(ROOT_PATH, "result/predictions/transformer/20250109221743_full.csv")
+PRED_PATH  = os.path.join(ROOT_PATH, "result/predictions/transformer/20250121213327_full.csv")
 SAVE_PATH_PRED      = os.path.join(ROOT_PATH, f"result/predictions/transformer_diffBCE/{DATE_STRING}.csv")
 SAVE_PATH_FULL_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer_diffBCE/{DATE_STRING}_full.csv")
 SAVE_PATH_MODEL     = os.path.join(MODEL_SAVE_DIR, "model_diffBCE.pickle")
@@ -825,7 +825,7 @@ def evaluate_model_performance(df):
     
     # --- 2) キャリブレーション(信頼度と実際の的中率の比較) ---
     # 予測確率を0~1に分割して、平均予測と実際のラベル(=勝率)をプロット
-    prob_true, prob_pred = calibration_curve(df["label_win"], df["pred_prob"], n_bins=10)
+    prob_true, prob_pred = calibration_curve(df["label_win"], df["pred_prob"], n_bins=20)
     plt.figure(figsize=(5,5))
     plt.plot(prob_pred, prob_true, marker="o", label="Calibration")
     plt.plot([0,1], [0,1], "--", color="gray", label="Perfect")

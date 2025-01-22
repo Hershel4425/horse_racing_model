@@ -1448,8 +1448,6 @@ def create_pedigree_feature(df):
     sire_dist = get_sire_distance_stats(df)
     df = pd.merge(df, sire_dist, on='father_name', how='left')
 
-    df = df.drop(columns = ['win_flag', 'rentaiflag', 'is_turf', 'is_dirt', 'father_name'])
-
     print(f'処理後のデータフレーム：{df.shape}')
     display(df.head(1))
 
@@ -1623,6 +1621,8 @@ def run_feature():
     df = calc_pace(df)
     # 過去の対戦成績を計算
     df = create_competitor_features_horse_id_and_bangou(df)
+    # 血統情報処理
+    df = create_pedigree_feature(df)
     # 欠損値処理
     df = edit_missing(df)
 
