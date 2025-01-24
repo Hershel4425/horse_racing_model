@@ -90,12 +90,12 @@ def _add_sire_additional_stats_no_leak(
 
     # 性別をまとめて male(牡,せん) / female(牝) / unknown に分類しておく
     def get_sex_class(x):
-        if x in ['牡','せん']:
+        if x in ['牡']:
             return 'male'
         elif x == '牝':
             return 'female'
         else:
-            return 'unknown'
+            return 'male' # センバは男扱い
     df['sex_class'] = df['性別'].apply(get_sex_class)
 
     # コース種類(芝,ダート以外は集計しない)
