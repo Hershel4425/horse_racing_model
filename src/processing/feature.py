@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import OneHotEncoder
 
+from pedigree.feature_ped import create_extensive_pedigree_features
+
 
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3/data"
 
@@ -1374,6 +1376,8 @@ def run_feature():
     # 過去の対戦成績を計算
     df = create_competitor_features_horse_id_and_bangou(df)
     # 血統情報処理
+    pedigree_df = pd.read_csv(PEDIGREE_ID_PATH, encoding="utf_8_sig")
+    df = create_extensive_pedigree_features(df, pedigree_df)
     # 欠損値処理
     df = edit_missing(df)
 
