@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import copy
 import pickle
@@ -174,7 +173,8 @@ class CustomTransformerEncoderLayer(nn.Module):
 
     def forward(self, src,
                 src_mask=None,
-                src_key_padding_mask=None):
+                src_key_padding_mask=None,
+                is_causal=False):
         # ----------------------------
         # 1) Self-Attention
         # ----------------------------
@@ -205,36 +205,29 @@ class CustomTransformerEncoderLayer(nn.Module):
 
 
 class HorseTransformer(nn.Module):
-    """
-    HorseTransformerの中で CustomTransformerEncoderLayer を使う例
-    """
     def __init__(self, cat_unique, cat_cols, max_seq_len,
                  num_dim=50, d_model=128, nhead=8, num_layers=4,
                  dropout=0.1, dim_feedforward=512):
         super().__init__()
-        # Embedding部やPositionalEncodingはこれまで通り
         self.feature_embedder = FeatureEmbedder(
             cat_unique, cat_cols, cat_emb_dim=16, num_dim=num_dim, feature_dim=d_model
         )
         self.pos_encoder = PositionalEncoding(d_model, max_len=max_seq_len)
 
-        # ここで custom layer を num_layers 分スタックした TransformerEncoder を作る
-        encoder_layers = nn.ModuleList([
-            CustomTransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                activation="gelu",  # reluやgeluなど好みで
-            )
-            for _ in range(num_layers)
-        ])
-        # nn.TransformerEncoder にまとめてあげる
+        # ここでは「同じCustomTransformerEncoderLayerを num_layers 回繰り返す」設定
+        encoder_layer = CustomTransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation="gelu"
+        )
         self.transformer_encoder = nn.TransformerEncoder(
-            nn.Sequential(*encoder_layers), num_layers=num_layers
+            encoder_layer,
+            num_layers=num_layers
         )
 
-        self.fc_out = nn.Linear(d_model, 6)  # [top1, top3, top5, pop1, pop3, pop5]
+        self.fc_out = nn.Linear(d_model, 6)
 
     def forward(self, src, src_key_padding_mask=None):
         emb = self.feature_embedder(src)
@@ -242,6 +235,58 @@ class HorseTransformer(nn.Module):
         out = self.transformer_encoder(emb, src_key_padding_mask=src_key_padding_mask)
         logits = self.fc_out(out)
         return logits
+    
+
+########################################
+# Auto Encorder
+########################################
+class HorseFeatureAutoEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim=50):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 512),
+            nn.ReLU(),
+            nn.Linear(512, input_dim)
+        )
+
+    def forward(self, x):
+        # x: (batch_size, input_dim)
+        z = self.encoder(x)       # 圧縮ベクトル
+        x_recon = self.decoder(z) # 再構築
+        return x_recon, z
+    
+class JockeyFeatureAutoEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim=50):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 512),
+            nn.ReLU(),
+            nn.Linear(512, input_dim)
+        )
+
+    def forward(self, x):
+        # x: (batch_size, input_dim)
+        z = self.encoder(x)       # 圧縮ベクトル
+        x_recon = self.decoder(z) # 再構築
+        return x_recon, z
     
 
 # =====================================================
@@ -274,8 +319,8 @@ def prepare_data(
     pop_col="人気",
     id_col="race_id",
     leakage_cols=None,
-    pca_dim_horse=50,
-    pca_dim_jockey=50,
+    ae_latent_horse=50,   # PCAの次元の代わりに使う: 馬のAEの潜在次元
+    ae_latent_jockey=50,  # 騎手のAEの潜在次元
     test_ratio=0.1,
     valid_ratio=0.1
 ):
@@ -332,70 +377,166 @@ def prepare_data(
         test_df[c] = test_df[c].cat.codes
 
     # PCA対象列を抽出（例：馬の芝成績系、騎手の芝成績系など）
-    pca_pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
-    pca_pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
-    pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
-    pca_jockey_target_cols = [c for c in num_cols if re.match(pca_pattern_jockey, c)]
-    other_num_cols = [c for c in num_cols if (c not in pca_horse_target_cols)
-                      and (c not in pca_jockey_target_cols)]
+    pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
+    pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'
 
-    # 1) Horse用のスケーリング + PCA
-    scaler_horse = StandardScaler()
-    horse_features_train_scaled = scaler_horse.fit_transform(train_df[pca_horse_target_cols].values)
-    horse_features_valid_scaled = scaler_horse.transform(valid_df[pca_horse_target_cols].values)
-    horse_features_test_scaled = scaler_horse.transform(test_df[pca_horse_target_cols].values)
+    horse_cols  = [c for c in num_cols if re.match(pattern_horse, c)]
+    jockey_cols = [c for c in num_cols if re.match(pattern_jockey, c)]
+    other_num_cols = [c for c in num_cols if c not in horse_cols + jockey_cols]
 
-    pca_dim_horse = min(pca_dim_horse, horse_features_train_scaled.shape[1])
-    pca_model_horse = PCA(n_components=pca_dim_horse)
-    horse_features_train_pca = pca_model_horse.fit_transform(horse_features_train_scaled)
-    horse_features_valid_pca = pca_model_horse.transform(horse_features_valid_scaled)
-    horse_features_test_pca = pca_model_horse.transform(horse_features_test_scaled)
+    # カテゴリ特徴量(後でconcat)
+    cat_train = train_df[cat_cols].values
+    cat_valid = valid_df[cat_cols].values
+    cat_test  = test_df[cat_cols].values
 
-    # 2) Jockey用のスケーリング + PCA
+    # ----------------------------------------------------
+    # 1) 標準化
+    # ----------------------------------------------------
+    scaler_horse  = StandardScaler()
     scaler_jockey = StandardScaler()
-    jockey_features_train_scaled = scaler_jockey.fit_transform(train_df[pca_jockey_target_cols].values)
-    jockey_features_valid_scaled = scaler_jockey.transform(valid_df[pca_jockey_target_cols].values)
-    jockey_features_test_scaled = scaler_jockey.transform(test_df[pca_jockey_target_cols].values)
+    scaler_other  = StandardScaler()
 
-    pca_dim_jockey = min(pca_dim_jockey, jockey_features_train_scaled.shape[1])
-    pca_model_jockey = PCA(n_components=pca_dim_jockey)
-    jockey_features_train_pca = pca_model_jockey.fit_transform(jockey_features_train_scaled)
-    jockey_features_valid_pca = pca_model_jockey.transform(jockey_features_valid_scaled)
-    jockey_features_test_pca = pca_model_jockey.transform(jockey_features_test_scaled)
+    if len(horse_cols)>0:
+        scaler_horse.fit(train_df[horse_cols])
+        horse_train_arr = scaler_horse.transform(train_df[horse_cols])
+        horse_valid_arr = scaler_horse.transform(valid_df[horse_cols])
+        horse_test_arr  = scaler_horse.transform(test_df[horse_cols])
+    else:
+        horse_train_arr = np.zeros((len(train_df),0))
+        horse_valid_arr = np.zeros((len(valid_df),0))
+        horse_test_arr  = np.zeros((len(test_df),0))
 
-    # 3) その他の数値特徴量のスケーリング
-    scaler_other = StandardScaler()
-    other_features_train = scaler_other.fit_transform(train_df[other_num_cols].values)
-    other_features_valid = scaler_other.transform(valid_df[other_num_cols].values)
-    other_features_test = scaler_other.transform(test_df[other_num_cols].values)
+    if len(jockey_cols)>0:
+        scaler_jockey.fit(train_df[jockey_cols])
+        jockey_train_arr= scaler_jockey.transform(train_df[jockey_cols])
+        jockey_valid_arr= scaler_jockey.transform(valid_df[jockey_cols])
+        jockey_test_arr = scaler_jockey.transform(test_df[jockey_cols])
+    else:
+        jockey_train_arr= np.zeros((len(train_df),0))
+        jockey_valid_arr= np.zeros((len(valid_df),0))
+        jockey_test_arr = np.zeros((len(test_df),0))
 
-    # 4) カテゴリ特徴量
-    cat_features_train = train_df[cat_cols].values
-    cat_features_valid = valid_df[cat_cols].values
-    cat_features_test = test_df[cat_cols].values
+    if len(other_num_cols)>0:
+        scaler_other.fit(train_df[other_num_cols])
+        other_train_arr = scaler_other.transform(train_df[other_num_cols])
+        other_valid_arr = scaler_other.transform(valid_df[other_num_cols])
+        other_test_arr  = scaler_other.transform(test_df[other_num_cols])
+    else:
+        other_train_arr = np.zeros((len(train_df),0))
+        other_valid_arr = np.zeros((len(valid_df),0))
+        other_test_arr  = np.zeros((len(test_df),0))
 
-    # 特徴量結合
-    X_train = np.concatenate([
-        cat_features_train,
-        other_features_train,
-        horse_features_train_pca,
-        jockey_features_train_pca
-    ], axis=1)
-    X_valid = np.concatenate([
-        cat_features_valid,
-        other_features_valid,
-        horse_features_valid_pca,
-        jockey_features_valid_pca
-    ], axis=1)
-    X_test = np.concatenate([
-        cat_features_test,
-        other_features_test,
-        horse_features_test_pca,
-        jockey_features_test_pca
-    ], axis=1)
+    # ----------------------------------------------------
+    # 2) AutoEncoder で馬特徴を圧縮
+    # ----------------------------------------------------
+    # HorseFeatureAutoEncoder は別途定義しておく (HorseTransformer等と同じファイルに置いてOK)
+    # 今回は trainデータのみで学習する例。必要に応じてtrain+validでも可。
+    from torch.utils.data import DataLoader, TensorDataset
 
-    # 数値次元を計算
-    actual_num_dim = other_features_train.shape[1] + pca_dim_horse + pca_dim_jockey
+    if horse_train_arr.shape[1] > 0:
+        # AEインスタンス
+        horse_input_dim = horse_train_arr.shape[1]
+        ae_horse = HorseFeatureAutoEncoder(input_dim=horse_input_dim, latent_dim=ae_latent_horse)
+
+        # 学習データをTorchDataset化
+        horse_train_dataset = TensorDataset(torch.tensor(horse_train_arr, dtype=torch.float32))
+        horse_train_loader  = DataLoader(horse_train_dataset, batch_size=512, shuffle=True)
+
+        # 学習
+        optimizer = torch.optim.Adam(ae_horse.parameters(), lr=1e-3, weight_decay=1e-5)
+        criterion = nn.MSELoss()
+
+        ae_horse.train()
+        num_epochs_ae = 10
+        for epoch in range(num_epochs_ae):
+            total_loss = 0
+            for (batch_x,) in horse_train_loader:
+                optimizer.zero_grad()
+                x_recon, z = ae_horse(batch_x)
+                loss = criterion(x_recon, batch_x)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"[AE-horse] Epoch {epoch+1}/{num_epochs_ae}  Loss: {total_loss/len(horse_train_loader):.4f}")
+
+        # 推論(Encoder部出力)
+        ae_horse.eval()
+        with torch.no_grad():
+            # train
+            x_train_tensor = torch.tensor(horse_train_arr, dtype=torch.float32)
+            _, z_train_horse_t = ae_horse(x_train_tensor)
+            z_train_horse = z_train_horse_t.numpy()
+
+            # valid
+            x_valid_tensor = torch.tensor(horse_valid_arr, dtype=torch.float32)
+            _, z_valid_horse_t = ae_horse(x_valid_tensor)
+            z_valid_horse = z_valid_horse_t.numpy()
+
+            # test
+            x_test_tensor = torch.tensor(horse_test_arr, dtype=torch.float32)
+            _, z_test_horse_t = ae_horse(x_test_tensor)
+            z_test_horse = z_test_horse_t.numpy()
+    else:
+        # 馬の特徴がそもそもない場合
+        z_train_horse = np.zeros((len(train_df), 0))
+        z_valid_horse = np.zeros((len(valid_df), 0))
+        z_test_horse  = np.zeros((len(test_df),  0))
+
+    # ----------------------------------------------------
+    # 3) AutoEncoder で騎手特徴を圧縮 (同様に)
+    # ----------------------------------------------------
+    if jockey_train_arr.shape[1] > 0:
+        ae_jockey = JockeyFeatureAutoEncoder(input_dim=jockey_train_arr.shape[1], latent_dim=ae_latent_jockey)
+
+        jockey_train_dataset = TensorDataset(torch.tensor(jockey_train_arr, dtype=torch.float32))
+        jockey_train_loader  = DataLoader(jockey_train_dataset, batch_size=512, shuffle=True)
+
+        optimizer = torch.optim.Adam(ae_jockey.parameters(), lr=1e-3, weight_decay=1e-5)
+        criterion = nn.MSELoss()
+
+        ae_jockey.train()
+        for epoch in range(num_epochs_ae):
+            total_loss = 0
+            for (batch_x,) in jockey_train_loader:
+                optimizer.zero_grad()
+                x_recon, z = ae_jockey(batch_x)
+                loss = criterion(x_recon, batch_x)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"[AE-jockey] Epoch {epoch+1}/{num_epochs_ae}  Loss: {total_loss/len(jockey_train_loader):.4f}")
+
+        # 推論
+        ae_jockey.eval()
+        with torch.no_grad():
+            # train
+            x_train_tensor = torch.tensor(jockey_train_arr, dtype=torch.float32)
+            _, z_train_jockey_t = ae_jockey(x_train_tensor)
+            z_train_jockey = z_train_jockey_t.numpy()
+
+            # valid
+            x_valid_tensor = torch.tensor(jockey_valid_arr, dtype=torch.float32)
+            _, z_valid_jockey_t = ae_jockey(x_valid_tensor)
+            z_valid_jockey = z_valid_jockey_t.numpy()
+
+            # test
+            x_test_tensor = torch.tensor(jockey_test_arr, dtype=torch.float32)
+            _, z_test_jockey_t = ae_jockey(x_test_tensor)
+            z_test_jockey = z_test_jockey_t.numpy()
+    else:
+        z_train_jockey = np.zeros((len(train_df), 0))
+        z_valid_jockey = np.zeros((len(valid_df), 0))
+        z_test_jockey  = np.zeros((len(test_df),  0))
+
+    # ----------------------------------------------------
+    # 4) 上記の圧縮ベクトル + その他数値 + カテゴリ特徴 を結合
+    # ----------------------------------------------------
+    X_train = np.concatenate([cat_train, other_train_arr, z_train_horse, z_train_jockey], axis=1)
+    X_valid = np.concatenate([cat_valid, other_valid_arr, z_valid_horse, z_valid_jockey], axis=1)
+    X_test  = np.concatenate([cat_test,  other_test_arr,  z_test_horse,  z_test_jockey],  axis=1)
+
+    # actual_num_dim = (otherの次元) + (馬の潜在次元) + (騎手の潜在次元)
+    actual_num_dim = other_train_arr.shape[1] + z_train_horse.shape[1] + z_train_jockey.shape[1]
 
     print(f'X_train shape: {X_train.shape}')
     print(f'X_valid shape: {X_valid.shape}')
@@ -517,11 +658,23 @@ def prepare_data(
     test_dataset  = HorseRaceDataset(test_seq,  test_lab,  test_mask,  test_rids_seq,  test_horses_seq)
 
     return (train_dataset, valid_dataset, test_dataset,
-            cat_cols, cat_unique, max_seq_len, pca_dim_horse, pca_dim_jockey, 6,
+            cat_cols, cat_unique, max_seq_len, 
+            ae_latent_horse,         # ここは pca_dim_horse の代わり
+            ae_latent_jockey,        # 同様
+            6,                       # ターゲット数
             actual_num_dim, df, cat_cols, num_cols,
-            pca_horse_target_cols, pca_jockey_target_cols, other_num_cols, 
-            scaler_horse, scaler_jockey, scaler_other,
-            pca_model_horse, pca_model_jockey, X_train.shape[1], id_col, target_col, train_df)
+            # 今回はスケーラだけ返す例にする
+            scaler_horse,
+            scaler_jockey,
+            scaler_other,
+            # AEモデルも返せる
+            ae_horse if horse_train_arr.shape[1]>0 else None,
+            ae_jockey if jockey_train_arr.shape[1]>0 else None,
+            X_train.shape[1],  # 全特徴次元
+            id_col,
+            target_col,
+            train_df
+        )
 
 
 # =====================================================
@@ -535,8 +688,8 @@ def run_train_time_split(
     batch_size=256,
     lr=0.001,
     num_epochs=50,
-    pca_dim_horse=50,
-    pca_dim_jockey=50,
+    ae_latent_horse=50,
+    ae_latent_jockey=50,
     test_ratio=0.2,
     valid_ratio=0.1,
     d_model=128,
@@ -558,18 +711,20 @@ def run_train_time_split(
     #    （全体をさらに段階的に time split して使う）
     # -------------------------------------------------
     (base_train_dataset, base_valid_dataset, base_test_dataset,
-     cat_cols, cat_unique, max_seq_len, pca_dim_horse, pca_dim_jockey, _,
+     cat_cols, cat_unique, 
+     max_seq_len, 
+     ae_dim_horse, ae__dim_jockey,
+     _,
      actual_num_dim, _, _, _,
-     _, _, _,
      scaler_horse, scaler_jockey, scaler_other,
-     pca_model_horse, pca_model_jockey, _,
+     _, _, _,
      id_col, target_col, df_train_part) = prepare_data(
         data_path=data_path,
         target_col=target_col,
         pop_col=pop_col,
         id_col=id_col,
-        pca_dim_horse=pca_dim_horse,
-        pca_dim_jockey=pca_dim_jockey,
+        ae_latent_horse=ae_latent_horse,
+        ae_latent_jockey=ae_latent_jockey,
         test_ratio=test_ratio,
         valid_ratio=valid_ratio
     )
@@ -914,10 +1069,10 @@ def run_train_time_split(
     best_model = models[best_model_idx]
     with open(SAVE_PATH_MODEL, "wb") as f:
         pickle.dump(best_model.state_dict(), f)
-    with open(SAVE_PATH_PCA_MODEL_HORSE, "wb") as f:
-        pickle.dump(pca_model_horse, f)
-    with open(SAVE_PATH_PCA_MODEL_JOCKEY, "wb") as f:
-        pickle.dump(pca_model_jockey, f)
+    # with open(SAVE_PATH_PCA_MODEL_HORSE, "wb") as f:
+    #     pickle.dump(pca_model_horse, f)
+    # with open(SAVE_PATH_PCA_MODEL_JOCKEY, "wb") as f:
+    #     pickle.dump(pca_model_jockey, f)
     with open(SAVE_PATH_SCALER_HORSE, "wb") as f:
         pickle.dump(scaler_horse, f)
     with open(SAVE_PATH_SCALER_JOCKEY, "wb") as f:
