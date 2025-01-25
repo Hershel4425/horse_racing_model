@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import OneHotEncoder
 
-from pedigree.feature_ped import create_extensive_pedigree_features
+from processing.pedigree.feature_ped import create_extensive_pedigree_features
 
 
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3/data"

@@ -96,7 +96,7 @@ def _add_sire_additional_stats_no_leak(
             return 'female'
         else:
             return 'male' # センバは男扱い
-    df['sex_class'] = df['性別'].apply(get_sex_class)
+    df['sex_class'] = df['性'].apply(get_sex_class)
 
     # コース種類(芝,ダート以外は集計しない)
     def get_surface_class(x):
@@ -177,8 +177,9 @@ def _add_sire_additional_stats_no_leak(
             sub['cum_dist_top2'] = sub.groupby(group_col)['dist_for_top2'].cumsum().shift(1).fillna(0)
 
             # sub を df にマージ
+            sub = sub.drop(columns=[group_col])
             df = df.merge(
-                sub[[group_col,'cum_gwin','cum_starts','cum_wins','cum_top2','cum_dist_top2']].reset_index(drop=True),
+                sub[['cum_gwin','cum_starts','cum_wins','cum_top2','cum_dist_top2']].reset_index(drop=True),
                 how='left',
                 left_index=True,
                 right_index=True,
