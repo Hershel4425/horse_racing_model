@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score, log_loss, brier_score_loss
 from sklearn.calibration import calibration_curve
