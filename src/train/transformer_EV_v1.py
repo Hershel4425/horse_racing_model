@@ -30,7 +30,7 @@ DATE_STRING = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 MODEL_SAVE_DIR = os.path.join(ROOT_PATH, f"models/transformer_diffBCE/{DATE_STRING}")
 
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")
-PRED_PATH  = os.path.join(ROOT_PATH, "result/predictions/transformer/20250121213327_full.csv")
+PRED_PATH  = os.path.join(ROOT_PATH, "result/predictions/transformer/20250125194112_full.csv")
 SAVE_PATH_PRED      = os.path.join(ROOT_PATH, f"result/predictions/transformer_diffBCE/{DATE_STRING}.csv")
 SAVE_PATH_FULL_PRED = os.path.join(ROOT_PATH, f"result/predictions/transformer_diffBCE/{DATE_STRING}_full.csv")
 SAVE_PATH_MODEL     = os.path.join(MODEL_SAVE_DIR, "model_diffBCE.pickle")
@@ -189,6 +189,58 @@ class HorseTransformerDiffBCE(nn.Module):
         out = self.transformer_encoder(emb, src_key_padding_mask=~src_key_padding_mask)
         diff = self.fc_out(out)  # shape: (batch, seq_len, 1)
         return diff
+    
+
+########################################
+# Auto Encorder
+########################################
+class HorseFeatureAutoEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim=50):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 512),
+            nn.ReLU(),
+            nn.Linear(512, input_dim)
+        )
+
+    def forward(self, x):
+        # x: (batch_size, input_dim)
+        z = self.encoder(x)       # 圧縮ベクトル
+        x_recon = self.decoder(z) # 再構築
+        return x_recon, z
+    
+class JockeyFeatureAutoEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim=50):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 512),
+            nn.ReLU(),
+            nn.Linear(512, input_dim)
+        )
+
+    def forward(self, x):
+        # x: (batch_size, input_dim)
+        z = self.encoder(x)       # 圧縮ベクトル
+        x_recon = self.decoder(z) # 再構築
+        return x_recon, z
 
 
 ########################################
@@ -222,8 +274,8 @@ def prepare_data_diff_bce(
     pop_col="単勝", # ベース支持率(人気=1番人気での支持率相当)
     test_ratio=0.1,
     valid_ratio=0.1,
-    pca_dim_horse=50,
-    pca_dim_jockey=50
+    ae_latent_horse=50,
+    ae_latent_jockey=50
 ):
     """
     例: 
@@ -305,92 +357,159 @@ def prepare_data_diff_bce(
         valid_df[c] = valid_df[c].cat.codes.replace(-1, 0)
         test_df[c]  = test_df[c].cat.codes.replace(-1, 0)
 
-    # PCA対象探し(例)
-    pca_pattern_horse = r'^(競走馬芝|競走馬ダート)'
-    pca_pattern_jockey= r'^(騎手芝|騎手ダート)'
+    # 対象探し(例)
+    pattern_horse = r'^(競走馬芝|競走馬ダート)'
+    pattern_jockey= r'^(騎手芝|騎手ダート)'
 
-    pca_horse_target_cols = [c for c in num_cols if re.match(pca_pattern_horse, c)]
-    pca_jockey_target_cols= [c for c in num_cols if re.match(pca_pattern_jockey, c)]
-    other_num_cols = [c for c in num_cols if c not in pca_horse_target_cols + pca_jockey_target_cols]
+    # この名前はpca_pattern_*になってるけど、使い回しOK
+    horse_cols   = [c for c in num_cols if re.match(pattern_horse, c)]
+    jockey_cols  = [c for c in num_cols if re.match(pattern_jockey, c)]
+    other_num_cols = [c for c in num_cols if c not in (horse_cols + jockey_cols)]
 
-    # スケーラ & PCA
-    scaler_horse = StandardScaler()
-    scaler_jockey= StandardScaler()
-    scaler_other = StandardScaler()
+    # 5) 標準化 (馬・騎手・その他)
+    # ---------------------------------------------------------------------
+    scaler_horse  = StandardScaler()
+    scaler_jockey = StandardScaler()
+    scaler_other  = StandardScaler()
 
-    # horse
-    def transform_pca(df_part, pca_cols, scaler, pca_dim):
-        if len(pca_cols)==0:
-            return np.zeros((len(df_part),0)), None
-        arr = df_part[pca_cols].values
-        arr_scaled = scaler.transform(arr) if hasattr(scaler, 'mean_') else scaler.fit_transform(arr)
-        if pca_dim>0 and pca_dim <= arr_scaled.shape[1]:
-            pca_model = PCA(n_components=pca_dim)
-            arr_pca = pca_model.fit_transform(arr_scaled) if not hasattr(pca_model, 'components_') else pca_model.transform(arr_scaled)
-            return arr_pca, pca_model
-        else:
-            return arr_scaled, None
-
-    # Fit on train
-    if len(pca_horse_target_cols)>0:
-        scaler_horse.fit(train_df[pca_horse_target_cols])
-    if len(pca_jockey_target_cols)>0:
-        scaler_jockey.fit(train_df[pca_jockey_target_cols])
-    if len(other_num_cols)>0:
+    # Fit
+    if len(horse_cols) > 0:
+        scaler_horse.fit(train_df[horse_cols])
+    if len(jockey_cols) > 0:
+        scaler_jockey.fit(train_df[jockey_cols])
+    if len(other_num_cols) > 0:
         scaler_other.fit(train_df[other_num_cols])
 
-    # PCA:
-    #  -> train
-    horse_train_arr = scaler_horse.transform(train_df[pca_horse_target_cols]) if len(pca_horse_target_cols)>0 else np.zeros((len(train_df),0))
-    if pca_dim_horse>0 and pca_dim_horse<=horse_train_arr.shape[1]:
-        pca_model_horse = PCA(n_components=pca_dim_horse).fit(horse_train_arr)
-        horse_train_pca = pca_model_horse.transform(horse_train_arr)
-    else:
-        pca_model_horse = None
-        horse_train_pca = horse_train_arr
+    # Transform
+    horse_train_arr = scaler_horse.transform(train_df[horse_cols])   if len(horse_cols)>0 else np.zeros((len(train_df),0))
+    horse_valid_arr = scaler_horse.transform(valid_df[horse_cols])   if len(horse_cols)>0 else np.zeros((len(valid_df),0))
+    horse_test_arr  = scaler_horse.transform(test_df[horse_cols])    if len(horse_cols)>0 else np.zeros((len(test_df),0))
 
-    #  -> valid
-    horse_valid_arr = scaler_horse.transform(valid_df[pca_horse_target_cols]) if len(pca_horse_target_cols)>0 else np.zeros((len(valid_df),0))
-    if pca_model_horse is not None:
-        horse_valid_pca = pca_model_horse.transform(horse_valid_arr)
-    else:
-        horse_valid_pca = horse_valid_arr
+    jockey_train_arr= scaler_jockey.transform(train_df[jockey_cols]) if len(jockey_cols)>0 else np.zeros((len(train_df),0))
+    jockey_valid_arr= scaler_jockey.transform(valid_df[jockey_cols]) if len(jockey_cols)>0 else np.zeros((len(valid_df),0))
+    jockey_test_arr = scaler_jockey.transform(test_df[jockey_cols])  if len(jockey_cols)>0 else np.zeros((len(test_df),0))
 
-    #  -> test
-    horse_test_arr = scaler_horse.transform(test_df[pca_horse_target_cols]) if len(pca_horse_target_cols)>0 else np.zeros((len(test_df),0))
-    if pca_model_horse is not None:
-        horse_test_pca = pca_model_horse.transform(horse_test_arr)
-    else:
-        horse_test_pca = horse_test_arr
-
-    # jockey
-    jockey_train_arr = scaler_jockey.transform(train_df[pca_jockey_target_cols]) if len(pca_jockey_target_cols)>0 else np.zeros((len(train_df),0))
-    if pca_dim_jockey>0 and pca_dim_jockey<=jockey_train_arr.shape[1]:
-        pca_model_jockey = PCA(n_components=pca_dim_jockey).fit(jockey_train_arr)
-        jockey_train_pca = pca_model_jockey.transform(jockey_train_arr)
-    else:
-        pca_model_jockey = None
-        jockey_train_pca = jockey_train_arr
-
-    jockey_valid_arr = scaler_jockey.transform(valid_df[pca_jockey_target_cols]) if len(pca_jockey_target_cols)>0 else np.zeros((len(valid_df),0))
-    jockey_valid_pca = pca_model_jockey.transform(jockey_valid_arr) if pca_model_jockey else jockey_valid_arr
-
-    jockey_test_arr = scaler_jockey.transform(test_df[pca_jockey_target_cols]) if len(pca_jockey_target_cols)>0 else np.zeros((len(test_df),0))
-    jockey_test_pca = pca_model_jockey.transform(jockey_test_arr) if pca_model_jockey else jockey_test_arr
-
-    # other
     other_train_arr = scaler_other.transform(train_df[other_num_cols]) if len(other_num_cols)>0 else np.zeros((len(train_df),0))
     other_valid_arr = scaler_other.transform(valid_df[other_num_cols]) if len(other_num_cols)>0 else np.zeros((len(valid_df),0))
     other_test_arr  = scaler_other.transform(test_df[other_num_cols])  if len(other_num_cols)>0 else np.zeros((len(test_df),0))
 
-    # 結合関数
-    def concat_features(df_part, cat_cols, other_arr, horse_pca, jockey_pca):
-        cat_val = df_part[cat_cols].values if len(cat_cols)>0 else np.zeros((len(df_part),0))
-        return np.concatenate([cat_val, other_arr, horse_pca, jockey_pca], axis=1)
 
-    X_train = concat_features(train_df, cat_cols, other_train_arr, horse_train_pca, jockey_train_pca)
-    X_valid = concat_features(valid_df, cat_cols, other_valid_arr, horse_valid_pca, jockey_valid_pca)
-    X_test  = concat_features(test_df, cat_cols, other_test_arr,  horse_test_pca,  jockey_test_pca)
+    # 6) ★ここで馬の数値特徴に対する AutoEncoder を学習 (Encoderだけ使う)
+    # ---------------------------------------------------------------------
+    # もし馬特徴がないならスキップ
+    if len(horse_cols) > 0:
+        # AutoEncoderインスタンス
+        horse_input_dim = horse_train_arr.shape[1]  # 特徴次元
+        ae_horse = HorseFeatureAutoEncoder(input_dim=horse_input_dim, latent_dim=ae_latent_horse)
+
+        # 学習用データ (trainのみ or train+valid でもOK)
+        horse_dataset = torch.tensor(horse_train_arr, dtype=torch.float32)
+        horse_loader = torch.utils.data.DataLoader(horse_dataset, batch_size=512, shuffle=True)
+
+        optimizer = torch.optim.Adam(ae_horse.parameters(), lr=1e-3, weight_decay=1e-5)
+        criterion = nn.MSELoss()
+
+        # 学習
+        ae_horse.train()
+        num_epochs = 10
+        for epoch in range(num_epochs):
+            total_loss = 0
+            for batch_x in horse_loader:
+                optimizer.zero_grad()
+                x_recon, z = ae_horse(batch_x)
+                loss = criterion(x_recon, batch_x)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"[AE-horse] Epoch {epoch+1}/{num_epochs}  Loss: {total_loss/len(horse_loader):.4f}")
+
+        # 推論 (Train, Valid, Testを Encoder に通して潜在ベクトル z を得る)
+        ae_horse.eval()
+        with torch.no_grad():
+            # train
+            train_torch = torch.tensor(horse_train_arr, dtype=torch.float32)
+            _, z_train_horse = ae_horse(train_torch)
+            z_train_horse = z_train_horse.numpy()
+
+            # valid
+            valid_torch = torch.tensor(horse_valid_arr, dtype=torch.float32)
+            _, z_valid_horse = ae_horse(valid_torch)
+            z_valid_horse = z_valid_horse.numpy()
+
+            # test
+            test_torch = torch.tensor(horse_test_arr, dtype=torch.float32)
+            _, z_test_horse = ae_horse(test_torch)
+            z_test_horse = z_test_horse.numpy()
+    else:
+        # 馬特徴がなければ空配列
+        z_train_horse = np.zeros((len(train_df), 0))
+        z_valid_horse = np.zeros((len(valid_df), 0))
+        z_test_horse  = np.zeros((len(test_df),  0))
+
+    # 7) 騎手特徴も同様にAE化していいし、あるいはPCAのままでもOK
+    # ---------------------------------------------------------------------
+    # 以下、ざっくり同じノリで "HorseFeatureAutoEncoder" じゃなくて
+    # "JockeyFeatureAutoEncoder" を用意してもいいし、
+    # 同じクラスでもOK (入力dim違うだけ)。
+    # ここでは省略例:
+    if len(jockey_cols) > 0:
+        # 同じ仕組みで学習 & 変換
+        jockey_input_dim = jockey_train_arr.shape[1]
+        ae_jockey = JockeyFeatureAutoEncoder(input_dim=jockey_input_dim, latent_dim=ae_latent_jockey)
+
+        # 学習用データ (trainのみ or train+valid でもOK)
+        jockey_dataset = torch.tensor(jockey_train_arr, dtype=torch.float32)
+        jockey_loader = torch.utils.data.DataLoader(jockey_dataset, batch_size=512, shuffle=True)
+
+        optimizer = torch.optim.Adam(ae_jockey.parameters(), lr=1e-3, weight_decay=1e-5)
+        criterion = nn.MSELoss()
+
+        # 学習
+        ae_jockey.train()
+        num_epochs = 10
+        for epoch in range(num_epochs):
+            total_loss = 0
+            for batch_x in jockey_loader:
+                optimizer.zero_grad()
+                x_recon, z = ae_jockey(batch_x)
+                loss = criterion(x_recon, batch_x)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"[AE-jockey] Epoch {epoch+1}/{num_epochs}  Loss: {total_loss/len(jockey_loader):.4f}")
+
+        # 推論 (Train, Valid, Testを Encoder に通して潜在ベクトル z を得る)
+        ae_jockey.eval()
+        with torch.no_grad():
+            # train
+            train_torch = torch.tensor(jockey_train_arr, dtype=torch.float32)
+            _, z_train_jockey = ae_jockey(train_torch)
+            z_train_jockey = z_train_jockey.numpy()
+
+            # valid
+            valid_torch = torch.tensor(jockey_valid_arr, dtype=torch.float32)
+            _, z_valid_jockey = ae_jockey(valid_torch)
+            z_valid_jockey = z_valid_jockey.numpy()
+
+            # test
+            test_torch = torch.tensor(jockey_test_arr, dtype=torch.float32)
+            _, z_test_jockey = ae_jockey(test_torch)
+            z_test_jockey = z_test_jockey.numpy()
+    else:
+        z_train_jockey = np.zeros((len(train_df), 0))
+        z_valid_jockey = np.zeros((len(valid_df), 0))
+        z_test_jockey  = np.zeros((len(test_df),  0))
+
+    # 8) AE結果を合わせて最終Xを作る (cat_features + other + AE-jockey + AE-jockey)
+    # ---------------------------------------------------------------------
+    def concat_features(df_part, cat_cols, other_arr, z_horse_arr, z_jockey_arr):
+        cat_val = df_part[cat_cols].values if len(cat_cols)>0 else np.zeros((len(df_part),0))
+        return np.concatenate([cat_val, other_arr, z_horse_arr, z_jockey_arr], axis=1)
+
+    X_train = concat_features(train_df, cat_cols, other_train_arr, z_train_jockey, z_train_jockey)
+    X_valid = concat_features(valid_df, cat_cols, other_valid_arr, z_valid_jockey, z_valid_jockey)
+    X_test  = concat_features(test_df, cat_cols, other_test_arr,  z_test_jockey,  z_test_jockey)
+
 
     # ラベル: is_win (1/0)
     y_train = train_df["is_win"].values
@@ -469,16 +588,21 @@ def prepare_data_diff_bce(
     valid_dataset = HorseRaceDatasetDiffBCE(valid_seq, valid_lab, valid_sup, valid_msk, valid_rids, valid_horses)
     test_dataset  = HorseRaceDatasetDiffBCE(test_seq,  test_lab,  test_sup,  test_msk,  test_rids,  test_horses)
 
-    # 数値次元 (other + PCA horse + PCA jockey)
-    actual_num_dim = other_train_arr.shape[1] + horse_train_pca.shape[1] + jockey_train_pca.shape[1]
+    # 11) 戻り値 (その他、AEモデルやscalerも必要なら返す)
+    # ---------------------------------------------------------------------
+    actual_num_dim = other_train_arr.shape[1] + z_train_horse.shape[1] + z_train_jockey.shape[1]
     total_feature_dim = X_train.shape[1]
 
-    return (train_dataset, valid_dataset, test_dataset,
-            cat_cols, cat_unique, max_seq_len,
-            actual_num_dim,
-            pca_model_horse, pca_model_jockey, scaler_horse, scaler_jockey, scaler_other,
-            df,  # 全体DF
-            total_feature_dim)
+    return (
+        train_dataset, valid_dataset, test_dataset,
+        cat_cols, cat_unique, max_seq_len,
+        actual_num_dim,
+        # PCA モデルがいらなければ削除、代わりに AEモデルを返すとかもアリ
+        None, None,
+        scaler_horse, scaler_jockey, scaler_other,
+        df,  # 全体DF
+        total_feature_dim,
+    )
 
 ########################################
 # 4) 学習ルーチン (BCE + 差分)
@@ -761,12 +885,12 @@ def run_training_diff_bce(
     with open(SAVE_PATH_MODEL, "wb") as f:
         pickle.dump(model.state_dict(), f)
 
-    if pca_model_horse is not None:
-        with open(SAVE_PATH_PCA_MODEL_HORSE, "wb") as f:
-            pickle.dump(pca_model_horse, f)
-    if pca_model_jockey is not None:
-        with open(SAVE_PATH_PCA_MODEL_JOCKEY, "wb") as f:
-            pickle.dump(pca_model_jockey, f)
+    # if pca_model_horse is not None:
+    #     with open(SAVE_PATH_PCA_MODEL_HORSE, "wb") as f:
+    #         pickle.dump(pca_model_horse, f)
+    # if pca_model_jockey is not None:
+    #     with open(SAVE_PATH_PCA_MODEL_JOCKEY, "wb") as f:
+    #         pickle.dump(pca_model_jockey, f)
     with open(SAVE_PATH_SCALER_HORSE, "wb") as f:
         pickle.dump(scaler_horse, f)
     with open(SAVE_PATH_SCALER_JOCKEY, "wb") as f:
