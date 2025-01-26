@@ -31,7 +31,6 @@ PEDIGREE_ID_PATH = ROOT_PATH + "/01_processed/40_pedigree/pedigree_horse_id.csv"
 OUTPUT_PATH = os.path.join(ROOT_PATH, "02_features/feature.csv")
 
 
-
 # -------------------------------
 # 日付処理
 # -------------------------------
@@ -1245,19 +1244,19 @@ def create_weight_features(df: pd.DataFrame) -> pd.DataFrame:
     # 例: df['馬体重'], df['馬体重増減'] (前走比)
 
     # もし「馬体重増減」が未計算なら自分で計算する
-    if '馬体重増減' not in df.columns:
+    if '増減' not in df.columns:
         # 前走馬体重との差分
-        df['馬体重増減'] = df.groupby("horse_id")['馬体重'].diff().fillna(0)
+        df['増減'] = df.groupby("horse_id")['馬体重'].diff().fillna(0)
 
     # 前走からの増減率 (小さすぎる値を除外したり、100倍して%に変えてもOK)
-    df['馬体重増減率'] = df['馬体重増減'] / (df['馬体重'] - df['馬体重増減']).replace(0, np.nan)
+    df['馬体重増減率'] = df['増減'] / (df['馬体重'] - df['増減']).replace(0, np.nan)
 
     # 直近3走の移動平均を例示 (expanding() や他のwindowでもいいわ)
     window_size = 3
-    df['馬体重増減_ma3'] = df.groupby("horse_id")['馬体重増減'].transform(lambda s: s.rolling(window_size).mean())
+    df['馬体重増減_ma3'] = df.groupby("horse_id")['増減'].transform(lambda s: s.rolling(window_size).mean())
 
     # 累積馬体重増減 (初出走からの通算増減合計を計算)
-    df['馬体重増減_cumsum'] = df.groupby("horse_id")['馬体重増減'].cumsum()
+    df['馬体重増減_cumsum'] = df.groupby("horse_id")['増減'].cumsum()
 
     # さらに馬体重の絶対値そのものも rolling して「コンディション推移」を擬似的に表す例
     df['馬体重_ma3'] = df.groupby("horse_id")['馬体重'].transform(lambda s: s.rolling(window_size).mean())

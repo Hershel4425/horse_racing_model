@@ -225,9 +225,9 @@ def _add_sire_age_stats_no_leak(df: pd.DataFrame, group_col: str, prefix: str) -
     df = df.copy()
     df[group_col] = df[group_col].fillna("NoData")
 
-    if '馬齢' not in df.columns:
+    if '齢' not in df.columns:
         # 馬齢が無い場合は適当に埋めるかスキップするしかないわ
-        df['馬齢'] = 0
+        df['齢'] = 0
 
     # win_flag, start_flag 用意
     df['win_flag'] = np.where(df['着順'] == 1, 1, 0)
@@ -242,9 +242,9 @@ def _add_sire_age_stats_no_leak(df: pd.DataFrame, group_col: str, prefix: str) -
     df[f"{prefix}_win_rate"] = 0.0
 
     # groupby で (group_col, 馬齢) ごとに cumsum → shift(1)
-    sub = df[[group_col, '馬齢','win_flag','start_flag']].copy()
-    sub['cum_starts'] = sub.groupby([group_col, '馬齢'])['start_flag'].cumsum().shift(1).fillna(0)
-    sub['cum_wins']   = sub.groupby([group_col, '馬齢'])['win_flag'].cumsum().shift(1).fillna(0)
+    sub = df[[group_col, '齢','win_flag','start_flag']].copy()
+    sub['cum_starts'] = sub.groupby([group_col, '齢'])['start_flag'].cumsum().shift(1).fillna(0)
+    sub['cum_wins']   = sub.groupby([group_col, '齢'])['win_flag'].cumsum().shift(1).fillna(0)
 
     # merge する
     df = df.merge(
