@@ -17,52 +17,6 @@ def unify_kana_underscore(name: str) -> str:
         return name
 
 
-def _aggregate_sire_stats(df: pd.DataFrame, sire_col: str = 'father_name') -> pd.DataFrame:
-    """
-    特定の列(例: 父馬名)をキーに、芝・ダートの勝率/連対率などを集計して返すサンプル。
-    (ご要望とは別の簡易サンプル。 create_extensive_pedigree_features 内部で使用中)
-    """
-    df = df.copy()
-    df[sire_col] = df[sire_col].fillna("NoData")
-    df = df.drop_duplicates(subset=["race_id", "馬番"])
-
-    df['win_flag'] = (df['着順'] == 1).astype(int)
-    df['rentai_flag'] = (df['着順'] <= 2).astype(int)
-
-    df['is_turf'] = (df['コース種類'] == '芝').astype(int)
-    df['is_dirt'] = (df['コース種類'] == 'ダート').astype(int)
-
-    grouped = df.groupby([sire_col, 'コース種類'], dropna=False).agg(
-        starts=('race_id','count'),
-        wins=('win_flag','sum'),
-        rentai=('rentai_flag','sum'),
-        sum_dist=('距離','sum')
-    ).reset_index()
-
-    stats_pivot = grouped.pivot_table(
-        index=sire_col, 
-        columns='コース種類',
-        values=['starts','wins','rentai','sum_dist'],
-        fill_value=0
-    )
-    stats_pivot.columns = [f"{c1}_{c2}" for (c1,c2) in stats_pivot.columns]
-
-    # 勝率・連対率・平均距離
-    if 'wins_芝' in stats_pivot and 'starts_芝' in stats_pivot:
-        stats_pivot['win_rate_芝'] = stats_pivot['wins_芝'] / stats_pivot['starts_芝'].replace(0,np.nan)
-        stats_pivot['rentai_rate_芝'] = stats_pivot['rentai_芝'] / stats_pivot['starts_芝'].replace(0,np.nan)
-        stats_pivot['mean_dist_芝'] = stats_pivot['sum_dist_芝'] / stats_pivot['starts_芝'].replace(0, np.nan)
-    if 'wins_ダート' in stats_pivot and 'starts_ダート' in stats_pivot:
-        stats_pivot['win_rate_ダート'] = stats_pivot['wins_ダート'] / stats_pivot['starts_ダート'].replace(0,np.nan)
-        stats_pivot['rentai_rate_ダート'] = stats_pivot['rentai_ダート'] / stats_pivot['starts_ダート'].replace(0,np.nan)
-        stats_pivot['mean_dist_ダート'] = stats_pivot['sum_dist_ダート'] / stats_pivot['starts_ダート'].replace(0, np.nan)
-
-    stats_pivot = stats_pivot.fillna(0)
-    stats_pivot = stats_pivot.reset_index().rename(columns={sire_col: sire_col})
-
-    return stats_pivot
-
-
 def _add_sire_additional_stats_no_leak(
     df: pd.DataFrame,
     group_col: str,
@@ -180,31 +134,25 @@ def _add_sire_additional_stats_no_leak(
             sub['cum_top2'] = sub.groupby(group_col)['top2_flag'].cumsum().shift(1).fillna(0)
             sub['cum_dist_top2'] = sub.groupby(group_col)['dist_for_top2'].cumsum().shift(1).fillna(0)
 
-            # sub を df にマージ
-            sub = sub.drop(columns=[group_col])
-            df = df.merge(
-                sub[['cum_gwin','cum_starts','cum_wins','cum_top2','cum_dist_top2']].reset_index(drop=True),
-                how='left',
-                left_index=True,
-                right_index=True,
-                suffixes=(None, "_dummy")
-            )
+            # sub 内で必要な列名をつくる
+            col_gwin = f"{prefix}_{s}_{sur}_重賞勝利数"
+            col_dist = f"{prefix}_{s}_{sur}_平均連帯距離"
+            col_wr   = f"{prefix}_{s}_{sur}_平均勝率"
 
-            # 求めたい列に代入
-            # 重賞勝利数
-            df_col1 = f"{prefix}_{s}_{sur}_重賞勝利数"
-            # 平均連帯距離 = cum_dist_top2 / cum_top2
-            df_col2 = f"{prefix}_{s}_{sur}_平均連帯距離"
-            # 平均勝率 = cum_wins / cum_starts
-            df_col3 = f"{prefix}_{s}_{sur}_平均勝率"
+            # ここがポイント: dfに直接代入する
+            df.loc[mask, col_gwin] = sub['cum_gwin'].values
 
-            # マスク該当部だけ更新し、それ以外は 0 のまま
-            df.loc[mask, df_col1] = df.loc[mask, 'cum_gwin']
-            df.loc[mask & (df['cum_top2']>0), df_col2] = df.loc[mask & (df['cum_top2']>0), 'cum_dist_top2'] / df.loc[mask & (df['cum_top2']>0), 'cum_top2']
-            df.loc[mask & (df['cum_starts']>0), df_col3] = df.loc[mask & (df['cum_starts']>0), 'cum_wins'] / df.loc[mask & (df['cum_starts']>0), 'cum_starts']
+            # 平均連帯距離
+            # 連対数>0 の場合のみ計算
+            df.loc[mask & (sub['cum_top2']>0), col_dist] = (
+                sub.loc[sub['cum_top2']>0, 'cum_dist_top2'] / sub.loc[sub['cum_top2']>0, 'cum_top2']
+            ).values
 
-            # 後処理: 不要なカラムを削除
-            df.drop(['cum_gwin','cum_starts','cum_wins','cum_top2','cum_dist_top2'], axis=1, inplace=True)
+            # 平均勝率
+            # 出走数>0 の場合のみ計算
+            df.loc[mask & (sub['cum_starts']>0), col_wr] = (
+                sub.loc[sub['cum_starts']>0, 'cum_wins'] / sub.loc[sub['cum_starts']>0, 'cum_starts']
+            ).values
 
     # 不要な作業列を削除
     df.drop(['sex_class','surface_class','is_grade_race_win','start_flag','win_flag','top2_flag','dist_for_top2'], axis=1, inplace=True)
@@ -219,97 +167,152 @@ def add_sire_age_range_stats_no_leak(
     ages: list = [2,3,4,5,6,7]
 ) -> pd.DataFrame:
     """
-    同じ (group_col) × (馬齢が ages に含まれる時) の成績を、
-    リークを防ぐために過去分のみのcumsum(shift(1))で集計し、
-    例: 'father_age2_starts','father_age2_wins','father_age2_win_rate' 等を
-    データフレームに追加する関数よ。
+    【同じ父馬】でグループ化し、
+    指定したすべての馬齢 (ages) について、
+    「過去の累積出走数」「過去の累積勝利数」「勝率」を
+    各レース行に付与する。
 
-    引数:
-        df: 
-            - 'date','race_id','馬番','着順' あたりが存在するDataFrame
-            - '齢' (馬齢) 列があれば使う。なければダミーで作る必要あり
-        group_col:
-            - グループ化対象の列名 (例:'father_name' など)
-        prefix:
-            - 出力列の接頭辞 (例:'father')
-        ages:
-            - 何歳区分を対象にするか (デフォルトで[2,3,4,5,6,7] )
-
-    戻り値:
-        df: 
-          各レース行に対して、(prefix)_age{age}_starts, (prefix)_age{age}_wins, 
-          (prefix)_age{age}_win_rate が追加されたDataFrame
+    ポイント:
+      - レースを (date, race_id) で時系列順に並べて cumsum → shift(1) を行うことでリーク防止
+      - 1つのレース行が馬齢3の馬でも、父の2歳実績/4歳実績/... 全てが付く
+      - 出力列例:
+          father_age2_starts, father_age2_wins, father_age2_win_rate,
+          father_age3_starts, father_age3_wins, father_age3_win_rate, ...
     """
+
     df = df.copy()
+
+    # -------------------------
+    # 1) 必要列の確認・準備
+    # -------------------------
+    if group_col not in df.columns:
+        raise ValueError(f"DataFrameに '{group_col}' 列がありません。")
+
+    if "date" not in df.columns or "race_id" not in df.columns:
+        raise ValueError("DataFrameに 'date' と 'race_id' 列が必要です。")
+
+    if "齢" not in df.columns:
+        raise ValueError("DataFrameに '齢' 列がありません。")
+
+    # 出走フラグ, 勝利フラグ
+    df["start_flag"] = df["着順"].notna().astype(int)
+    df["win_flag"] = (df["着順"] == 1).astype(int)
+
+    # 父馬名などの欠損補完
     df[group_col] = df[group_col].fillna("NoData")
 
-    # 適切なソート
-    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
-    # 重複行削除
-    df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # -------------------------
+    # 2) race単位で (father_name, date, race_id, ageごとの出走数/勝利数) を集計
+    # -------------------------
+    # まず行ベースで「(father_name, date, race_id, 齢)」に対し出走/勝利を合計
+    # → 同じレースに同じ父馬の複数頭がいれば、そのぶんカウントが増える
+    agg_df = (
+        df.groupby([group_col, "date", "race_id", "齢"], as_index=False)
+          .agg(
+              starts_sum = ("start_flag", "sum"),
+              wins_sum   = ("win_flag", "sum")
+          )
+    )
+    # これで1行 = 1 (father_name, date, race_id, 齢)
 
-    # 馬齢が列名 '齢' で存在しないなら作るか、列名を合わせる
-    if '齢' not in df.columns:
-        # 例: '馬齢' という列があるなら df['齢'] = df['馬齢']
-        # 今回はダミーで作る:
-        df['齢'] = 0
+    # pivotして、「father_age2_starts」「father_age3_starts」... のように列を展開
+    # (可読性のため、いったん age2, age3... というカテゴリ名を作る)
+    agg_df["age_cat"] = agg_df["齢"].apply(lambda x: f"age{x}" if x in ages else "other")
 
-    # 勝利/出走フラグ
-    df['win_flag'] = (df['着順'] == 1).astype(int)
-    df['start_flag'] = df['着順'].notna().astype(int)
+    # 出力に使う馬齢だけをピックアップする
+    agg_df_sub = agg_df[agg_df["age_cat"].isin([f"age{a}" for a in ages])].copy()
 
-    # 処理しやすいように、後でマージするための一意キー列を作成
-    df['_original_index_'] = df.index
+    # pivot (starts / wins をそれぞれpivot してあとで結合でも良いが、一括のほうが手軽)
+    # "starts_sum", "wins_sum" をそれぞれ "age_cat" × {starts_sum, wins_sum} に
+    # wide化してやりたいので、ややトリッキーですが stack/unstack か pivot_table を使う
+    pivot_df = pd.pivot_table(
+        agg_df_sub,
+        index=[group_col, "date", "race_id"], 
+        columns=["age_cat"], 
+        values=["starts_sum","wins_sum"],
+        aggfunc="sum",  # groupbyレベルでさらに合計（通常重複はないはずだが念のため）
+        fill_value=0
+    )
+    # MultiIndex になるので整形
+    pivot_df.columns = [f"{col[0]}_{col[1]}" for col in pivot_df.columns]
 
-    # レース時系列に沿ってソート (過去→未来)
-    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
-
-    # 各 age ごとに累積を取って、df に列追加
+    # pivot_df にない age(a) は全部 0 の列を作っておく（安全策）
     for a in ages:
-        # 1) 該当年齢(=a)の行だけを sub DataFrame として抽出
-        sub = df.loc[df['齢'] == a, [group_col, '_original_index_', 'win_flag','start_flag']].copy()
+        col1 = f"starts_sum_age{a}"
+        col2 = f"wins_sum_age{a}"
+        if col1 not in pivot_df.columns:
+            pivot_df[col1] = 0
+        if col2 not in pivot_df.columns:
+            pivot_df[col2] = 0
 
-        # 2) (group_col) ごとに cumsum し、当該行は含まないよう shift(1)
-        sub['cum_starts'] = sub.groupby(group_col)['start_flag'].cumsum().shift(1).fillna(0)
-        sub['cum_wins']   = sub.groupby(group_col)['win_flag'].cumsum().shift(1).fillna(0)
+    pivot_df = pivot_df.reset_index()  # => (father_name, date, race_id) の一意キー
 
-        # 3) カラム名をリネーム (例: father_age2_starts 等)
-        col_starts = f"{prefix}_age{a}_starts"
-        col_wins   = f"{prefix}_age{a}_wins"
-        col_wr     = f"{prefix}_age{a}_win_rate"
-        sub.rename(columns={
-            'cum_starts': col_starts,
-            'cum_wins':   col_wins
-        }, inplace=True)
+    # -------------------------
+    # 3) 時系列順に cumsum & shift(1) で「過去の累積」へ
+    # -------------------------
+    # father_nameごとに、(date, race_id) 昇順でソートしつつ cumsum → shift(1)
+    # => 当該レースより前の累計値
+    pivot_df = pivot_df.sort_values([group_col, "date", "race_id"])
 
-        # 4) sub を df に merge
-        #    キーは _original_index_（同じ行同士を対応づける）
-        df = pd.merge(
-            df,
-            sub[['_original_index_', col_starts, col_wins]],
-            on='_original_index_',
-            how='left'
+    group_cols_for_cumsum = [f"starts_sum_age{a}" for a in ages] + [f"wins_sum_age{a}" for a in ages]
+    
+    # グループ単位で cumsum → shift(1)
+    pivot_df[group_cols_for_cumsum] = (
+        pivot_df.groupby(group_col)[group_cols_for_cumsum]
+                .apply(lambda g: g.cumsum().shift(1).fillna(0))
+                .reset_index(drop=True)
+    )
+
+    # ここで pivot_df の各行は
+    #  father_name, date, race_id, starts_sum_age2, ..., wins_sum_age7
+    # に「過去レースまでの累積値」が入っている
+
+    # -------------------------
+    # 4) pivot_df を元の df に結合 (キーは father_name, date, race_id)
+    # -------------------------
+    # (注意) 同じ (father_name, date, race_id) に複数頭出走がある場合も、その累計は同じ値
+    df_merged = pd.merge(
+        df,
+        pivot_df,
+        on=[group_col, "date", "race_id"],
+        how="left"
+    )
+
+    # -------------------------
+    # 5) 列名を prefix_age{a}_starts / prefix_age{a}_wins / prefix_age{a}_win_rate に変更
+    #    & 勝率計算
+    # -------------------------
+    for a in ages:
+        col_starts_in = f"starts_sum_age{a}"
+        col_wins_in   = f"wins_sum_age{a}"
+
+        col_starts_out = f"{prefix}_age{a}_starts"
+        col_wins_out   = f"{prefix}_age{a}_wins"
+        col_wr_out     = f"{prefix}_age{a}_win_rate"
+
+        # リネーム
+        df_merged[col_starts_out] = df_merged[col_starts_in].fillna(0)
+        df_merged[col_wins_out]   = df_merged[col_wins_in].fillna(0)
+
+        # 勝率 ( starts>0 の場合のみ計算 )
+        df_merged[col_wr_out] = 0.0
+        mask_starts = (df_merged[col_starts_out] > 0)
+        df_merged.loc[mask_starts, col_wr_out] = (
+            df_merged.loc[mask_starts, col_wins_out] / df_merged.loc[mask_starts, col_starts_out]
         )
 
-        # 5) 勝率列を計算 (starts>0 のとき wins/starts)
-        df[col_wr] = 0.0
-        has_starts_mask = df[col_starts].notna() & (df[col_starts] > 0)
-        df.loc[has_starts_mask, col_wr] = (
-            df.loc[has_starts_mask, col_wins] / df.loc[has_starts_mask, col_starts]
-        )
+    # 不要な中間列 (starts_sum_ageX, wins_sum_ageX) を削除
+    drop_cols = [f"starts_sum_age{a}" for a in ages] + [f"wins_sum_age{a}" for a in ages]
+    df_merged.drop(columns=drop_cols, inplace=True)
 
-        # 欠損を0で埋める
-        df[col_starts] = df[col_starts].fillna(0)
-        df[col_wins]   = df[col_wins].fillna(0)
-        df[col_wr]     = df[col_wr].fillna(0)
+    # 仕上げ
+    df_merged.drop(["start_flag","win_flag"], axis=1, errors="ignore", inplace=True)
 
-    # 後処理：不要列を削除
-    df.drop(['_original_index_', 'win_flag','start_flag'], axis=1, inplace=True)
+    # 必要に応じて元の順序に並べ直す (date, race_id, 馬番 などで)
+    # 例:
+    # df_merged = df_merged.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
 
-    # 最後に元の順序(index)に戻したいならsortし直してもOK
-    # df = df.sort_values('index').reset_index(drop=True)  # 必要なら
-
-    return df
+    return df_merged
 
 
 
@@ -342,8 +345,8 @@ def _add_sire_first_appear_year(df: pd.DataFrame, group_col: str, prefix: str) -
         (df['date'] - df[f"{prefix}_earliest_date"]).dt.days // 365
     ).fillna(0).clip(lower=0)
 
-    # 不要なら earliest_date 列を削除
-    df.drop(columns=[f"{prefix}_earliest_date"], inplace=True)
+    # # 不要なら earliest_date 列を削除
+    # df.drop(columns=[f"{prefix}_earliest_date"], inplace=True)
 
     return df
 
@@ -430,17 +433,7 @@ def create_extensive_pedigree_features(
 
     # 5) 父系/母父系などのフラグ作成
     extended_pedigree_df['father_name'] = extended_pedigree_df['pedigree_0']
-    extended_pedigree_df['mother_father_name'] = extended_pedigree_df['pedigree_2'] if 'pedigree_2' in extended_pedigree_df else np.nan
-
-    def check_sunday_line(name):
-        if pd.isna(name):
-            return 0
-        if 'サンデーサイレンス' in name:
-            return 1
-        return 0
-
-    extended_pedigree_df['father_is_sunday_line'] = extended_pedigree_df['father_name'].apply(check_sunday_line)
-    extended_pedigree_df['mf_is_sunday_line'] = extended_pedigree_df['mother_father_name'].apply(check_sunday_line)
+    extended_pedigree_df['mother_father_name'] = extended_pedigree_df['pedigree_4'] if 'pedigree_4' in extended_pedigree_df else np.nan
 
     # 6) df への父馬・母父馬マージ
     #    (最低限の戦績サンプル: _aggregate_sire_stats を利用して父・母父の集計を結合する例)
@@ -450,13 +443,6 @@ def create_extensive_pedigree_features(
         on='horse_id',
         how='left'
     )
-    father_stats = _aggregate_sire_stats(df_merged, sire_col='father_name')
-    mf_stats = _aggregate_sire_stats(df_merged, sire_col='mother_father_name')
-
-    # 父馬
-    df_merged = pd.merge(df_merged, father_stats, on='father_name', how='left')
-    # 母父馬
-    df_merged = pd.merge(df_merged, mf_stats, on='mother_father_name', how='left', suffixes=('','_mf'))
 
     # 7) インブリード等をマージ
     use_cols = ['horse_id'] + [c for c in extended_pedigree_df.columns if ('登場回数' in c or 'インブリード血量' in c) or (c.endswith('_is_sunday_line'))]
@@ -488,13 +474,6 @@ def create_extensive_pedigree_features(
         df_merged,
         group_col='mother_father_name',
         prefix='mf'
-    )
-
-    # mother_father (同じ馬という扱いで再度)
-    df_merged = _add_sire_additional_stats_no_leak(
-        df_merged,
-        group_col='mother_father_name',
-        prefix='mf_sib'
     )
 
     # 10) (追加) 父系・母父系 × 馬齢 の年齢影響(成長曲線)
