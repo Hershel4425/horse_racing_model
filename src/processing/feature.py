@@ -1155,6 +1155,8 @@ def create_competitor_features_horse_id_and_bangou(df):
     """
     df = df.copy()
     df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
 
     print('対戦戦績を追加')
 

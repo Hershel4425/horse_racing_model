@@ -86,6 +86,8 @@ def _add_sire_additional_stats_no_leak(
     """
     # 作業用コピー
     df = df.copy()
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
     df[group_col] = df[group_col].fillna("NoData")
 
     # 性別をまとめて male(牡,せん) / female(牝) / unknown に分類しておく
@@ -147,6 +149,8 @@ def _add_sire_additional_stats_no_leak(
 
     # 処理しやすいように date, race_id, 馬番 でソート
     df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
 
     # 性別を3パターン: (all, male, female)、コースを2パターン: (芝,ダート) でループ
     sex_list = ['all', 'male', 'female']
@@ -208,6 +212,98 @@ def _add_sire_additional_stats_no_leak(
     return df
 
 
+def _add_sire_age_stats_no_leak(df: pd.DataFrame, group_col: str, prefix: str) -> pd.DataFrame:
+    """
+    「父が同じ馬 or 母父が同じ馬」×「馬齢」単位で成績を集計し、
+    リークを防ぐためにレース順にソート→shift(1)する形で付与するわ。
+    
+    例として:
+      - prefix_starts (累積スタート数)
+      - prefix_wins   (累積勝利数)
+      - prefix_win_rate (勝率) = wins / starts
+    """
+    df = df.copy()
+    df[group_col] = df[group_col].fillna("NoData")
+
+    if '馬齢' not in df.columns:
+        # 馬齢が無い場合は適当に埋めるかスキップするしかないわ
+        df['馬齢'] = 0
+
+    # win_flag, start_flag 用意
+    df['win_flag'] = np.where(df['着順'] == 1, 1, 0)
+    df['start_flag'] = np.where(df['着順'].notna(), 1, 0)
+
+    # ソートして過去順に並べる
+    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+
+    # いったん出力列を初期化
+    df[f"{prefix}_starts"] = 0
+    df[f"{prefix}_wins"]   = 0
+    df[f"{prefix}_win_rate"] = 0.0
+
+    # groupby で (group_col, 馬齢) ごとに cumsum → shift(1)
+    sub = df[[group_col, '馬齢','win_flag','start_flag']].copy()
+    sub['cum_starts'] = sub.groupby([group_col, '馬齢'])['start_flag'].cumsum().shift(1).fillna(0)
+    sub['cum_wins']   = sub.groupby([group_col, '馬齢'])['win_flag'].cumsum().shift(1).fillna(0)
+
+    # merge する
+    df = df.merge(
+        sub[['cum_starts','cum_wins']].reset_index(drop=True),
+        how='left',
+        left_index=True,
+        right_index=True
+    )
+
+    df.loc[df['cum_starts']>0, f"{prefix}_starts"] = df.loc[df['cum_starts']>0, 'cum_starts']
+    df.loc[df['cum_starts']>0, f"{prefix}_wins"]   = df.loc[df['cum_starts']>0, 'cum_wins']
+    df.loc[df['cum_starts']>0, f"{prefix}_win_rate"] = (
+        df.loc[df['cum_starts']>0, 'cum_wins'] / df.loc[df['cum_starts']>0, 'cum_starts']
+    )
+
+    # 不要列drop
+    df.drop(['win_flag','start_flag','cum_starts','cum_wins'], axis=1, inplace=True)
+
+    return df
+
+
+def _add_sire_first_appear_year(df: pd.DataFrame, group_col: str, prefix: str) -> pd.DataFrame:
+    """
+    父(または母父)がデータ中で「初めて登場した日付」から、現在のレース日(date)までが何年経過しているかを計算する。
+    => (レース日 - 最初に登場した日付).days // 365
+    
+    例:
+      df[f"{prefix}_first_appear_year"] に「初登場からの年数」を格納。
+    """
+    df = df.copy()
+    df[group_col] = df[group_col].fillna("NoData")
+
+    # 適切なソート
+    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
+
+    # group_col(例: father_name)ごとに最初に登場した日付を求める
+    first_date_df = (
+        df.groupby(group_col, as_index=False)['date']
+          .min()
+          .rename(columns={'date': f"{prefix}_earliest_date"})
+    )
+    df = pd.merge(df, first_date_df, on=group_col, how='left')
+
+    # もし日付が欠損している場合は何もできないのでfillna(0)等してもOK
+    df[f"{prefix}_first_appear_year"] = (
+        (df['date'] - df[f"{prefix}_earliest_date"]).dt.days // 365
+    ).fillna(0).clip(lower=0)
+
+    # 不要なら earliest_date 列を削除
+    df.drop(columns=[f"{prefix}_earliest_date"], inplace=True)
+
+    return df
+
+
+# -------------------------------
+# メイン処理
+# -------------------------------
 def create_extensive_pedigree_features(
     df: pd.DataFrame,
     pedigree_df: pd.DataFrame,
@@ -228,6 +324,10 @@ def create_extensive_pedigree_features(
     """
     df = df.copy()
     pedigree_df = pedigree_df.copy()
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # 重複行削除
+    pedigree_df = pedigree_df.drop_duplicates(subset=["horse_id"])
 
     # 1) pedigree_df の表記ゆれを修正
     ped_cols = [c for c in pedigree_df.columns if 'pedigree_' in c]
@@ -349,5 +449,34 @@ def create_extensive_pedigree_features(
         group_col='mother_father_name',
         prefix='mf_sib'
     )
+
+    # 10) (追加) 父系・母父系 × 馬齢 の年齢影響(成長曲線)
+    #    例では「スタート数」「勝利数」「勝率」の3つを作るわ。
+    #    father_age_starts, father_age_wins, father_age_win_rate
+    #    mf_age_starts,     mf_age_wins,     mf_age_win_rate
+    df_merged = _add_sire_age_stats_no_leak(
+        df_merged,
+        group_col='father_name',
+        prefix='father_age'
+    )
+    df_merged = _add_sire_age_stats_no_leak(
+        df_merged,
+        group_col='mother_father_name',
+        prefix='mf_age'
+    )
+
+    # === 11) 今回のリクエスト: 父として初登場して何年目？ 母父として初登場して何年目？ ===
+    # father / mother_father 別々に計算し、dfに加える
+    df_merged = _add_sire_first_appear_year(
+        df_merged,
+        group_col='father_name',
+        prefix='father'
+    )  # => father_first_appear_year
+    df_merged = _add_sire_first_appear_year(
+        df_merged,
+        group_col='mother_father_name',
+        prefix='mf'
+    )  # => mf_first_appear_year
+
 
     return df_merged
