@@ -17,11 +17,9 @@ def unify_kana_underscore(name: str) -> str:
         return name
 
 
-def _add_sire_additional_stats_no_leak(
-    df: pd.DataFrame,
-    group_col: str,
-    prefix: str
-) -> pd.DataFrame:
+def _add_sire_additional_stats_no_leak(df: pd.DataFrame,
+                                       group_col: str,
+                                       prefix: str) -> pd.DataFrame:
     """
     父馬 or 母父馬ごとに、以下の値を「レース実施日時点」で累積しておき、当該レースには反映させない(リーク防止のためshift(1))。
     - 重賞勝利数(芝・ダート別、性別統合/牡馬牝馬別)
@@ -40,12 +38,10 @@ def _add_sire_additional_stats_no_leak(
     """
     # 作業用コピー
     df = df.copy()
-    print("父と母父産駒の成績を集計します。")
-    print("処理前DF：", df.shape)
-    # 重複行削除
-    df = df.drop_duplicates(subset=["race_id", "馬番"])
-    # ソート
-    df = df.sort_values(['date', 'race_id', '着順']).reset_index(drop=True)
+    # 最初に一度だけ重複行削除: "race_id" + "馬番" 単位
+    df.drop_duplicates(subset=["race_id", "馬番"], inplace=True)
+    
+    # group_col が欠損のものを一旦 "NoData" に
     df[group_col] = df[group_col].fillna("NoData")
 
     # 性別をまとめて male(牡,せん) / female(牝) / unknown に分類しておく
@@ -55,7 +51,8 @@ def _add_sire_additional_stats_no_leak(
         elif x == '牝':
             return 'female'
         else:
-            return 'male' # センバは男扱い
+            return 'male'  # センは male 扱い
+
     df['sex_class'] = df['性'].apply(get_sex_class)
 
     # コース種類(芝,ダート以外は集計しない)
@@ -69,7 +66,6 @@ def _add_sire_additional_stats_no_leak(
     df['surface_class'] = df['コース種類'].apply(get_surface_class)
 
     # 重賞勝利数のカウント用フラグ
-    # グレードが "G1","G2","G3" のいずれか含むか単に "G" 含むかはお好みで。ここでは "G" 含む場合に。
     df['is_grade_race_win'] = np.where(
         df['グレード'].fillna('').str.contains('G') & (df['着順'] == 1),
         1, 0
@@ -77,8 +73,8 @@ def _add_sire_additional_stats_no_leak(
 
     # スタート数、勝利数、連対(2着以内)数、連対時距離合計
     df['start_flag'] = np.where(df['着順'].notna(), 1, 0)
-    df['win_flag'] = np.where(df['着順'] == 1, 1, 0)
-    df['top2_flag'] = np.where(df['着順'] <= 2, 1, 0)
+    df['win_flag']   = np.where(df['着順'] == 1, 1, 0)
+    df['top2_flag']  = np.where(df['着順'] <= 2, 1, 0)
     df['dist_for_top2'] = np.where(df['着順'] <= 2, df['距離'].fillna(0), 0)
 
     # =============
@@ -86,80 +82,77 @@ def _add_sire_additional_stats_no_leak(
     # ただし "surface_class=その他" は集計対象外
     # =============
 
-    # 入れ物(最終的に merge 用)
-    # カラム例:
-    #   prefix + "_all_芝_重賞勝利数", prefix + "_all_芝_平均連帯距離", prefix + "_all_芝_平均勝率"
-    #   prefix + "_male_芝_重賞勝利数", prefix + "_male_芝_平均連帯距離", prefix + "_male_芝_平均勝率"
-    #   prefix + "_female_ダート_重賞勝利数", ...
-    # など
+    # 出力列の作成
     new_cols = [
-        f"{prefix}_all_芝_重賞勝利数", f"{prefix}_all_芝_平均連帯距離", f"{prefix}_all_芝_平均勝率",
-        f"{prefix}_male_芝_重賞勝利数", f"{prefix}_male_芝_平均連帯距離", f"{prefix}_male_芝_平均勝率",
+        f"{prefix}_all_芝_重賞勝利数",    f"{prefix}_all_芝_平均連帯距離",    f"{prefix}_all_芝_平均勝率",
+        f"{prefix}_male_芝_重賞勝利数",   f"{prefix}_male_芝_平均連帯距離",   f"{prefix}_male_芝_平均勝率",
         f"{prefix}_female_芝_重賞勝利数", f"{prefix}_female_芝_平均連帯距離", f"{prefix}_female_芝_平均勝率",
 
-        f"{prefix}_all_ダート_重賞勝利数", f"{prefix}_all_ダート_平均連帯距離", f"{prefix}_all_ダート_平均勝率",
-        f"{prefix}_male_ダート_重賞勝利数", f"{prefix}_male_ダート_平均連帯距離", f"{prefix}_male_ダート_平均勝率",
+        f"{prefix}_all_ダート_重賞勝利数",    f"{prefix}_all_ダート_平均連帯距離",    f"{prefix}_all_ダート_平均勝率",
+        f"{prefix}_male_ダート_重賞勝利数",   f"{prefix}_male_ダート_平均連帯距離",   f"{prefix}_male_ダート_平均勝率",
         f"{prefix}_female_ダート_重賞勝利数", f"{prefix}_female_ダート_平均連帯距離", f"{prefix}_female_ダート_平均勝率",
     ]
-    # 初期化
     for c in new_cols:
         df[c] = 0.0
 
-    # 処理しやすいように date, race_id, 馬番 でソート
-    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
-    # 重複行削除
-    df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # レースを (date, race_id, 馬番) でソート
+    df = df.sort_values(["date", "race_id", "馬番"]).reset_index(drop=True)
 
-    # 性別を3パターン: (all, male, female)、コースを2パターン: (芝,ダート) でループ
     sex_list = ['all', 'male', 'female']
     surface_list = ['芝', 'ダート']
 
     for s in sex_list:
         for sur in surface_list:
-            # マスク
             if s == 'all':
+                # すべての馬 (male, female) を対象
                 mask = (df['surface_class'] == sur)
             else:
+                # 該当する性別 + コースが sur の馬
                 mask = (df['surface_class'] == sur) & (df['sex_class'] == s)
 
-            # 集計したい列を用意
-            # 重賞勝利数 → cumsum('is_grade_race_win')
-            # スタート数 → cumsum('start_flag')
-            # 勝利数 → cumsum('win_flag')
-            # 連対数 → cumsum('top2_flag')
-            # 連対距離合計 → cumsum('dist_for_top2')
-            # groupbyキーは [group_col], ただしマスク外は計算不要なので 0埋め
-            sub = df.loc[mask, [group_col, 'is_grade_race_win','start_flag','win_flag','top2_flag','dist_for_top2']].copy()
+            # 集計に使う列をサブセット
+            sub = df.loc[mask, [
+                group_col, 'is_grade_race_win', 'start_flag',
+                'win_flag', 'top2_flag', 'dist_for_top2'
+            ]].copy()
 
-            # グループごとに累積→shift(1)
-            sub['cum_gwin'] = sub.groupby(group_col)['is_grade_race_win'].cumsum().shift(1).fillna(0)
-            sub['cum_starts'] = sub.groupby(group_col)['start_flag'].cumsum().shift(1).fillna(0)
-            sub['cum_wins'] = sub.groupby(group_col)['win_flag'].cumsum().shift(1).fillna(0)
-            sub['cum_top2'] = sub.groupby(group_col)['top2_flag'].cumsum().shift(1).fillna(0)
-            sub['cum_dist_top2'] = sub.groupby(group_col)['dist_for_top2'].cumsum().shift(1).fillna(0)
+            # グループ単位で累積 → shift(1)
+            sub['cum_gwin']       = sub.groupby(group_col)['is_grade_race_win'].cumsum().shift(1).fillna(0)
+            sub['cum_starts']     = sub.groupby(group_col)['start_flag'].cumsum().shift(1).fillna(0)
+            sub['cum_wins']       = sub.groupby(group_col)['win_flag'].cumsum().shift(1).fillna(0)
+            sub['cum_top2']       = sub.groupby(group_col)['top2_flag'].cumsum().shift(1).fillna(0)
+            sub['cum_dist_top2']  = sub.groupby(group_col)['dist_for_top2'].cumsum().shift(1).fillna(0)
 
-            # sub 内で必要な列名をつくる
+            # 出力する列名
             col_gwin = f"{prefix}_{s}_{sur}_重賞勝利数"
             col_dist = f"{prefix}_{s}_{sur}_平均連帯距離"
             col_wr   = f"{prefix}_{s}_{sur}_平均勝率"
 
-            # ここがポイント: dfに直接代入する
-            df.loc[mask, col_gwin] = sub['cum_gwin'].values
+            # 重賞勝利数の代入（index をキーにする）
+            df.loc[sub.index, col_gwin] = sub['cum_gwin']
 
-            # 平均連帯距離
-            # 連対数>0 の場合のみ計算
-            df.loc[mask & (sub['cum_top2']>0), col_dist] = (
-                sub.loc[sub['cum_top2']>0, 'cum_dist_top2'] / sub.loc[sub['cum_top2']>0, 'cum_top2']
-            ).values
+            # 平均連帯距離 (連対数>0 の場合のみ計算)
+            valid_top2 = (sub['cum_top2'] > 0)
+            # まず 0 で埋めておく（既に 0.0 で初期化済みでもOK）
+            dist_series = pd.Series(0.0, index=sub.index)
+            dist_series[valid_top2] = (
+                sub.loc[valid_top2, 'cum_dist_top2'] / sub.loc[valid_top2, 'cum_top2']
+            )
+            df.loc[sub.index, col_dist] = dist_series
 
-            # 平均勝率
-            # 出走数>0 の場合のみ計算
-            df.loc[mask & (sub['cum_starts']>0), col_wr] = (
-                sub.loc[sub['cum_starts']>0, 'cum_wins'] / sub.loc[sub['cum_starts']>0, 'cum_starts']
-            ).values
+            # 平均勝率 (出走数>0 の場合のみ計算)
+            valid_starts = (sub['cum_starts'] > 0)
+            wr_series = pd.Series(0.0, index=sub.index)
+            wr_series[valid_starts] = (
+                sub.loc[valid_starts, 'cum_wins'] / sub.loc[valid_starts, 'cum_starts']
+            )
+            df.loc[sub.index, col_wr] = wr_series
 
-    # 不要な作業列を削除
-    df.drop(['sex_class','surface_class','is_grade_race_win','start_flag','win_flag','top2_flag','dist_for_top2'], axis=1, inplace=True)
+    # 使い終わった作業列を削除
+    df.drop([
+        'sex_class','surface_class','is_grade_race_win',
+        'start_flag','win_flag','top2_flag','dist_for_top2'
+    ], axis=1, inplace=True)
 
     return df
 
