@@ -212,58 +212,100 @@ def _add_sire_additional_stats_no_leak(
     return df
 
 
-def _add_sire_age_stats_no_leak(df: pd.DataFrame, group_col: str, prefix: str) -> pd.DataFrame:
+def add_sire_age_range_stats_no_leak(
+    df: pd.DataFrame,
+    group_col: str,    # 'father_name' など
+    prefix: str,       # 'father' など
+    ages: list = [2,3,4,5,6,7]
+) -> pd.DataFrame:
     """
-    「父が同じ馬 or 母父が同じ馬」×「馬齢」単位で成績を集計し、
-    リークを防ぐためにレース順にソート→shift(1)する形で付与するわ。
-    
-    例として:
-      - prefix_starts (累積スタート数)
-      - prefix_wins   (累積勝利数)
-      - prefix_win_rate (勝率) = wins / starts
+    同じ (group_col) × (馬齢が ages に含まれる時) の成績を、
+    リークを防ぐために過去分のみのcumsum(shift(1))で集計し、
+    例: 'father_age2_starts','father_age2_wins','father_age2_win_rate' 等を
+    データフレームに追加する関数よ。
+
+    引数:
+        df: 
+            - 'date','race_id','馬番','着順' あたりが存在するDataFrame
+            - '齢' (馬齢) 列があれば使う。なければダミーで作る必要あり
+        group_col:
+            - グループ化対象の列名 (例:'father_name' など)
+        prefix:
+            - 出力列の接頭辞 (例:'father')
+        ages:
+            - 何歳区分を対象にするか (デフォルトで[2,3,4,5,6,7] )
+
+    戻り値:
+        df: 
+          各レース行に対して、(prefix)_age{age}_starts, (prefix)_age{age}_wins, 
+          (prefix)_age{age}_win_rate が追加されたDataFrame
     """
     df = df.copy()
     df[group_col] = df[group_col].fillna("NoData")
 
+    # 馬齢が列名 '齢' で存在しないなら作るか、列名を合わせる
     if '齢' not in df.columns:
-        # 馬齢が無い場合は適当に埋めるかスキップするしかないわ
+        # 例: '馬齢' という列があるなら df['齢'] = df['馬齢']
+        # 今回はダミーで作る:
         df['齢'] = 0
 
-    # win_flag, start_flag 用意
-    df['win_flag'] = np.where(df['着順'] == 1, 1, 0)
-    df['start_flag'] = np.where(df['着順'].notna(), 1, 0)
+    # 勝利/出走フラグ
+    df['win_flag'] = (df['着順'] == 1).astype(int)
+    df['start_flag'] = df['着順'].notna().astype(int)
 
-    # ソートして過去順に並べる
+    # 処理しやすいように、後でマージするための一意キー列を作成
+    df['_original_index_'] = df.index
+
+    # レース時系列に沿ってソート (過去→未来)
     df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
 
-    # いったん出力列を初期化
-    df[f"{prefix}_starts"] = 0
-    df[f"{prefix}_wins"]   = 0
-    df[f"{prefix}_win_rate"] = 0.0
+    # 各 age ごとに累積を取って、df に列追加
+    for a in ages:
+        # 1) 該当年齢(=a)の行だけを sub DataFrame として抽出
+        sub = df.loc[df['齢'] == a, [group_col, '_original_index_', 'win_flag','start_flag']].copy()
 
-    # groupby で (group_col, 馬齢) ごとに cumsum → shift(1)
-    sub = df[[group_col, '齢','win_flag','start_flag']].copy()
-    sub['cum_starts'] = sub.groupby([group_col, '齢'])['start_flag'].cumsum().shift(1).fillna(0)
-    sub['cum_wins']   = sub.groupby([group_col, '齢'])['win_flag'].cumsum().shift(1).fillna(0)
+        # 2) (group_col) ごとに cumsum し、当該行は含まないよう shift(1)
+        sub['cum_starts'] = sub.groupby(group_col)['start_flag'].cumsum().shift(1).fillna(0)
+        sub['cum_wins']   = sub.groupby(group_col)['win_flag'].cumsum().shift(1).fillna(0)
 
-    # merge する
-    df = df.merge(
-        sub[['cum_starts','cum_wins']].reset_index(drop=True),
-        how='left',
-        left_index=True,
-        right_index=True
-    )
+        # 3) カラム名をリネーム (例: father_age2_starts 等)
+        col_starts = f"{prefix}_age{a}_starts"
+        col_wins   = f"{prefix}_age{a}_wins"
+        col_wr     = f"{prefix}_age{a}_win_rate"
+        sub.rename(columns={
+            'cum_starts': col_starts,
+            'cum_wins':   col_wins
+        }, inplace=True)
 
-    df.loc[df['cum_starts']>0, f"{prefix}_starts"] = df.loc[df['cum_starts']>0, 'cum_starts']
-    df.loc[df['cum_starts']>0, f"{prefix}_wins"]   = df.loc[df['cum_starts']>0, 'cum_wins']
-    df.loc[df['cum_starts']>0, f"{prefix}_win_rate"] = (
-        df.loc[df['cum_starts']>0, 'cum_wins'] / df.loc[df['cum_starts']>0, 'cum_starts']
-    )
+        # 4) sub を df に merge
+        #    キーは _original_index_（同じ行同士を対応づける）
+        df = pd.merge(
+            df,
+            sub[['_original_index_', col_starts, col_wins]],
+            on='_original_index_',
+            how='left'
+        )
 
-    # 不要列drop
-    df.drop(['win_flag','start_flag','cum_starts','cum_wins'], axis=1, inplace=True)
+        # 5) 勝率列を計算 (starts>0 のとき wins/starts)
+        df[col_wr] = 0.0
+        has_starts_mask = df[col_starts].notna() & (df[col_starts] > 0)
+        df.loc[has_starts_mask, col_wr] = (
+            df.loc[has_starts_mask, col_wins] / df.loc[has_starts_mask, col_starts]
+        )
+
+        # 欠損を0で埋める
+        df[col_starts] = df[col_starts].fillna(0)
+        df[col_wins]   = df[col_wins].fillna(0)
+        df[col_wr]     = df[col_wr].fillna(0)
+
+    # 後処理：不要列を削除
+    df.drop(['_original_index_', 'win_flag','start_flag'], axis=1, inplace=True)
+
+    # 最後に元の順序(index)に戻したいならsortし直してもOK
+    # df = df.sort_values('index').reset_index(drop=True)  # 必要なら
 
     return df
+
 
 
 def _add_sire_first_appear_year(df: pd.DataFrame, group_col: str, prefix: str) -> pd.DataFrame:
@@ -454,15 +496,17 @@ def create_extensive_pedigree_features(
     #    例では「スタート数」「勝利数」「勝率」の3つを作るわ。
     #    father_age_starts, father_age_wins, father_age_win_rate
     #    mf_age_starts,     mf_age_wins,     mf_age_win_rate
-    df_merged = _add_sire_age_stats_no_leak(
+    df_merged = add_sire_age_range_stats_no_leak(
         df_merged,
         group_col='father_name',
-        prefix='father_age'
+        prefix='father_age',
+        ages=[2,3,4,5,6,7]
     )
-    df_merged = _add_sire_age_stats_no_leak(
+    df_merged = add_sire_age_range_stats_no_leak(
         df_merged,
         group_col='mother_father_name',
-        prefix='mf_age'
+        prefix='mf_age',
+        ages=[2,3,4,5,6,7]
     )
 
     # === 11) 今回のリクエスト: 父として初登場して何年目？ 母父として初登場して何年目？ ===
