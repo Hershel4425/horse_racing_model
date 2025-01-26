@@ -1292,13 +1292,13 @@ def edit_missing(df):
     df['累計獲得賞金_missing'] = df['累計獲得賞金'].isnull().astype(int)
     df['累計獲得賞金'] = df['累計獲得賞金'].fillna(0)
 
-    # horse_ability（0埋め＋フラグ）
+    # horse_ability（1埋め＋フラグ）
     df['horse_ability_missing'] = df['horse_ability'].isnull().astype(int)
-    df['horse_ability'] = df['horse_ability'].fillna(0)
+    df['horse_ability'] = df['horse_ability'].fillna(1)
 
-    # horse_ability_mean（0埋め＋フラグ）
+    # horse_ability_mean（1埋め＋フラグ）
     df['horse_ability_mean_missing'] = df['horse_ability_mean'].isnull().astype(int)
-    df['horse_ability_mean'] = df['horse_ability_mean'].fillna(0)
+    df['horse_ability_mean'] = df['horse_ability_mean'].fillna(1)
 
     # 過去走情報系（例：1走前着順、2走前着順など）
     for col in ['1走前着順','2走前着順','3走前着順','4走前着順','5走前着順']:
@@ -1321,7 +1321,7 @@ def edit_missing(df):
         df[col] = df[col].fillna(0)
     for col in ['1走前horse_ability','2走前horse_ability','3走前horse_ability','4走前horse_ability','5走前horse_ability']:
         df[col+'_missing'] = df[col].isnull().astype(int)
-        df[col] = df[col].fillna(0)
+        df[col] = df[col].fillna(1)
     for col in ['1走前タイム','2走前タイム','3走前タイム','4走前タイム','5走前タイム']:
         df[col+'_missing'] = df[col].isnull().astype(int)
         df[col] = df[col].fillna(0)
