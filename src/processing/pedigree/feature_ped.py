@@ -243,6 +243,11 @@ def add_sire_age_range_stats_no_leak(
     df = df.copy()
     df[group_col] = df[group_col].fillna("NoData")
 
+    # 適切なソート
+    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
+
     # 馬齢が列名 '齢' で存在しないなら作るか、列名を合わせる
     if '齢' not in df.columns:
         # 例: '馬齢' という列があるなら df['齢'] = df['馬齢']
