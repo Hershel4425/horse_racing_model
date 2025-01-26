@@ -1113,6 +1113,26 @@ def calc_pace(df):
 
 
 # -------------------------------
+# ペースと脚質の交互作用
+# -------------------------------
+def create_pace_style_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ペース(ハイ/ミドル/スロー)と脚質(逃げ/先行/差し/追込など)の相互作用特徴を付与する例。
+    """
+    df = df.copy()
+    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+
+    # 文字列を結合して1つのカテゴリ特徴量にする
+    df['ペース_脚質'] = df['ペース'].fillna("不明") + "_" + df['脚質'].fillna("不明")
+
+    # もし「ペース×脚質」をone-hot化したければ、pandasのget_dummiesなどを適用するといいわ:
+    # pace_style_dummies = pd.get_dummies(df['ペース_脚質'], prefix='pace_style')
+    # df = pd.concat([df, pace_style_dummies], axis=1)
+
+    return df
+
+
+# -------------------------------
 # 過去の対戦成績を作る
 # -------------------------------
 def create_distance_category(distance):
@@ -1205,6 +1225,42 @@ def create_competitor_features_horse_id_and_bangou(df):
                 if rankB < rankA:
                     competitor_dist_history[keyBA][1] += 1
 
+    return df
+
+
+# -------------------------------
+# 体重処理
+# -------------------------------
+def create_weight_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    馬体重や馬体重増減を用いた時系列特徴量を作る例の関数よ。
+    前走比の増減や直近N走の平均増減率などを計算して付与するわ。
+    """
+    df = df.copy()
+    df = df.sort_values(["horse_id", "date", "race_id"]).drop_duplicates(["race_id","馬番"]).reset_index(drop=True)
+
+    # 馬体重や増減列があると想定するわ
+    # 例: df['馬体重'], df['馬体重増減'] (前走比)
+
+    # もし「馬体重増減」が未計算なら自分で計算する
+    if '馬体重増減' not in df.columns:
+        # 前走馬体重との差分
+        df['馬体重増減'] = df.groupby("horse_id")['馬体重'].diff().fillna(0)
+
+    # 前走からの増減率 (小さすぎる値を除外したり、100倍して%に変えてもOK)
+    df['馬体重増減率'] = df['馬体重増減'] / (df['馬体重'] - df['馬体重増減']).replace(0, np.nan)
+
+    # 直近3走の移動平均を例示 (expanding() や他のwindowでもいいわ)
+    window_size = 3
+    df['馬体重増減_ma3'] = df.groupby("horse_id")['馬体重増減'].transform(lambda s: s.rolling(window_size).mean())
+
+    # 累積馬体重増減 (初出走からの通算増減合計を計算)
+    df['馬体重増減_cumsum'] = df.groupby("horse_id")['馬体重増減'].cumsum()
+
+    # さらに馬体重の絶対値そのものも rolling して「コンディション推移」を擬似的に表す例
+    df['馬体重_ma3'] = df.groupby("horse_id")['馬体重'].transform(lambda s: s.rolling(window_size).mean())
+
+    # 上記のような特徴量をいろいろ作って活用してみてね
     return df
 
 
@@ -1322,6 +1378,16 @@ def edit_missing(df):
     df['タイム_missing'] = df['タイム'].isnull().astype(int)
     df['タイム'] = df['タイム'].fillna(0)
 
+    # 体重増減率（0埋め＋フラグ）
+    df['馬体重増減率_missing'] = df['馬体重増減率'].isnull().astype(int)
+    df['馬体重増減率'] = df['馬体重増減率'].fillna(0)
+    df['馬体重増減_cumsum_missing'] = df['馬体重増減_cumsum'].isnull().astype(int)
+    df['馬体重増減_cumsum'] = df['馬体重増減_cumsum'].fillna(0)
+    df['馬体重増減_ma3_missing'] = df['馬体重増減_ma3'].isnull().astype(int)
+    df['馬体重増減_ma3'] = df['馬体重増減_ma3'].fillna(0)
+    df['馬体重_ma3_missing'] = df['馬体重_ma3'].isnull().astype(int)
+    df['馬体重_ma3'] = df['馬体重_ma3'].fillna(0)
+
     # 最後に重複削除
     # 重複行削除
     df = df.drop_duplicates(subset=["race_id", "馬番"])
@@ -1373,11 +1439,15 @@ def run_feature():
     df = calc_running_style(df)
     # ペースを判断する関数
     df = calc_pace(df)
+    # ペースと脚質
+    df = create_weight_features(df)
     # 過去の対戦成績を計算
     df = create_competitor_features_horse_id_and_bangou(df)
     # 血統情報処理
     pedigree_df = pd.read_csv(PEDIGREE_ID_PATH, encoding="utf_8_sig")
     df = create_extensive_pedigree_features(df, pedigree_df)
+    # 体重について
+    df = create_weight_features(df)
     # 欠損値処理
     df = edit_missing(df)
 
