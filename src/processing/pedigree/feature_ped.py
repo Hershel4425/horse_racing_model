@@ -40,8 +40,12 @@ def _add_sire_additional_stats_no_leak(
     """
     # 作業用コピー
     df = df.copy()
+    print("父と母父産駒の成績を集計します。")
+    print("処理前DF：", df.shape)
     # 重複行削除
     df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # ソート
+    df = df.sort_values(['date', 'race_id', '着順']).reset_index(drop=True)
     df[group_col] = df[group_col].fillna("NoData")
 
     # 性別をまとめて male(牡,せん) / female(牝) / unknown に分類しておく
@@ -180,8 +184,14 @@ def add_sire_age_range_stats_no_leak(
           father_age3_starts, father_age3_wins, father_age3_win_rate, ...
     """
 
+    # 作業用コピー
     df = df.copy()
-
+    print("父と母父産駒の年齢別成績を集計します。")
+    print("処理前DF：", df.shape)
+    # 重複行削除
+    df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # ソート
+    df = df.sort_values(['date', 'race_id', '着順']).reset_index(drop=True)
     # -------------------------
     # 1) 必要列の確認・準備
     # -------------------------
@@ -324,13 +334,15 @@ def _add_sire_first_appear_year(df: pd.DataFrame, group_col: str, prefix: str) -
     例:
       df[f"{prefix}_first_appear_year"] に「初登場からの年数」を格納。
     """
+    # 作業用コピー
     df = df.copy()
-    df[group_col] = df[group_col].fillna("NoData")
-
-    # 適切なソート
-    df = df.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+    print("父と母父産駒が最初に登場してから何年経ったか集計します。")
+    print("処理前DF：", df.shape)
     # 重複行削除
     df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # ソート
+    df = df.sort_values(['date', 'race_id', '着順']).reset_index(drop=True)
+    df[group_col] = df[group_col].fillna("NoData")
 
     # group_col(例: father_name)ごとに最初に登場した日付を求める
     first_date_df = (
@@ -374,8 +386,12 @@ def create_extensive_pedigree_features(
     """
     df = df.copy()
     pedigree_df = pedigree_df.copy()
+    print("血統情報をもとにインブリードを計算します。。")
+    print("処理前DF：", df.shape)
     # 重複行削除
     df = df.drop_duplicates(subset=["race_id", "馬番"])
+    # ソート
+    df = df.sort_values(['date', 'race_id', '着順']).reset_index(drop=True)
     # 重複行削除
     pedigree_df = pedigree_df.drop_duplicates(subset=["horse_id"])
 
