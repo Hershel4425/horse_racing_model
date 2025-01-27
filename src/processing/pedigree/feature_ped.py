@@ -140,8 +140,6 @@ def _add_sire_additional_stats_no_leak(
     # ================
     # ピボット後の列例: 出走フラグ_all_芝, 勝利フラグ_all_芝, 連対フラグ_all_芝, 連対距離_all_芝, ...
     # まず「gwin_cnt_〜」「avg_dist_〜」「win_rate_〜」列を作る
-    out_cols = {}  # 元列→作る列名の対応辞書
-
     # sex_surface の一覧を推定 (例: all_芝, male_芝, female_芝, all_ダート, male_ダート, ...)
     # pivot前に .isin() してるので、そこまで多くないはず
     set_sex_surf = set()
