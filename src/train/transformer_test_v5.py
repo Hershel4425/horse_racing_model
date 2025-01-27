@@ -343,6 +343,9 @@ def prepare_data(
     # CSV読み込み
     df = pd.read_csv(data_path, encoding="utf_8_sig")
 
+    # # 古いデータを参考にしない
+    # df = df[df['date'] >= '2015-01-01']
+
     # 時系列Split
     train_df, valid_df, test_df = split_data(df, id_col=id_col, target_col=target_col,
                                              test_ratio=test_ratio, valid_ratio=valid_ratio)

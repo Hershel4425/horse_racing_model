@@ -17,144 +17,249 @@ def unify_kana_underscore(name: str) -> str:
         return name
 
 
-def _add_sire_additional_stats_no_leak(df: pd.DataFrame,
-                                       group_col: str,
-                                       prefix: str) -> pd.DataFrame:
+def _add_sire_additional_stats_no_leak(
+    df: pd.DataFrame,
+    group_col: str,
+    prefix: str
+) -> pd.DataFrame:
     """
-    父馬 or 母父馬ごとに、以下の値を「レース実施日時点」で累積しておき、当該レースには反映させない(リーク防止のためshift(1))。
-    - 重賞勝利数(芝・ダート別、性別統合/牡馬牝馬別)
-    - 平均連帯距離(芝・ダート別、性別統合/牡馬牝馬別)
-    - 平均勝率(芝・ダート別、性別統合/牡馬牝馬別)
+    父馬 or 母父馬ごとに、以下の値を「レース日時点」で累積（リーク防止のため shift(1)）し、
+    芝・ダート × 性別(牡(せん含) / 牝 / all) の全組み合わせについて
+    それぞれの列(重賞勝利数, 平均連対距離, 平均勝率)を当該レース行に付与する。
 
-    さらに「母父が同じ馬」も同じロジックで集計可能。
-    ただし、この関数は「group_col」「prefix」を変えて再利用することで対応する。
-    
-    引数:
-        df: 元のDataFrame（date、race_id、馬番、性別、グレード、着順、コース種類、距離 などを含む）
-        group_col: 集計対象となる列名（例: 'father_name', 'mother_father_name'）
-        prefix: 出力列に付与するプレフィックス（例: 'father', 'mf', 'mf_sib' など）
-    戻り値:
-        df: 新たに以下の列が追加されたDataFrameを返す
+    ※ add_sire_age_range_stats_no_leak と同じような「pivotしてから時系列順にcumsum＋shift」方式に変更。
     """
-    # 作業用コピー
+
+    # 作業用にコピー
     df = df.copy()
-    # 最初に一度だけ重複行削除: "race_id" + "馬番" 単位
+
+    # (race_id, 馬番) が重複している行は削除しておく
     df.drop_duplicates(subset=["race_id", "馬番"], inplace=True)
-    
-    # group_col が欠損のものを一旦 "NoData" に
+
+    # group_col(例: father_name) の欠損補完
     df[group_col] = df[group_col].fillna("NoData")
 
-    # 性別をまとめて male(牡,せん) / female(牝) / unknown に分類しておく
+    # ソート (念のため date, race_id, 着順の昇順に)
+    df = df.sort_values(["date", "race_id", "着順"]).reset_index(drop=True)
+
+    # 性別を "male"/"female"/(セン含む場合も"male") に分ける
     def get_sex_class(x):
-        if x in ['牡']:
-            return 'male'
-        elif x == '牝':
-            return 'female'
+        if x == "牡":
+            return "牡馬"
+        elif x == "牝":
+            return "牝馬"
         else:
-            return 'male'  # センは male 扱い
+            return "牡馬"  # センは male 扱い
+    df["sex_class"] = df["性"].apply(get_sex_class)
 
-    df['sex_class'] = df['性'].apply(get_sex_class)
-
-    # コース種類(芝,ダート以外は集計しない)
+    # コース種類を "芝"/"ダート"/"その他" にまとめる
     def get_surface_class(x):
-        if x == '芝':
-            return '芝'
-        elif x == 'ダート':
-            return 'ダート'
+        if x == "芝":
+            return "芝"
+        elif x == "ダート":
+            return "ダート"
         else:
-            return 'その他'
-    df['surface_class'] = df['コース種類'].apply(get_surface_class)
+            return "その他"
+    df["surface_class"] = df["コース種類"].apply(get_surface_class)
 
-    # 重賞勝利数のカウント用フラグ
-    df['is_grade_race_win'] = np.where(
-        df['グレード'].fillna('').str.contains('G') & (df['着順'] == 1),
+    # 重賞勝利フラグ
+    df["重賞勝利フラグ"] = np.where(
+        df["グレード"].fillna("").str.contains("G") & (df["着順"] == 1),
         1, 0
     )
 
-    # スタート数、勝利数、連対(2着以内)数、連対時距離合計
-    df['start_flag'] = np.where(df['着順'].notna(), 1, 0)
-    df['win_flag']   = np.where(df['着順'] == 1, 1, 0)
-    df['top2_flag']  = np.where(df['着順'] <= 2, 1, 0)
-    df['dist_for_top2'] = np.where(df['着順'] <= 2, df['距離'].fillna(0), 0)
+    # 出走フラグ、勝利フラグ、連対フラグ、連対距離
+    df["出走フラグ"] = np.where(df["着順"].notna(), 1, 0)
+    df["勝利フラグ"]   = np.where(df["着順"] == 1, 1, 0)
+    df["連対フラグ"]  = np.where(df["着順"] <= 2, 1, 0)
+    df["連対距離"] = np.where(df["着順"] <= 2, df["距離"].fillna(0), 0)
 
-    # =============
-    # 以下で、(group_col, sex_class, surface_class) 単位で累積計算→shift(1) する
-    # ただし "surface_class=その他" は集計対象外
-    # =============
+    # 芝 or ダート のみ対象 (その他は集計に含めない)
+    df = df[df["surface_class"].isin(["芝","ダート"])].copy()
 
-    # 出力列の作成
-    new_cols = [
-        f"{prefix}_all_芝_重賞勝利数",    f"{prefix}_all_芝_平均連帯距離",    f"{prefix}_all_芝_平均勝率",
-        f"{prefix}_male_芝_重賞勝利数",   f"{prefix}_male_芝_平均連帯距離",   f"{prefix}_male_芝_平均勝率",
-        f"{prefix}_female_芝_重賞勝利数", f"{prefix}_female_芝_平均連帯距離", f"{prefix}_female_芝_平均勝率",
+    # sex_class='all' の行を追加
+    df_all = df.copy()
+    df_all["sex_class"] = "牡牝混合"
+    df2 = pd.concat([df, df_all], ignore_index=True)
 
-        f"{prefix}_all_ダート_重賞勝利数",    f"{prefix}_all_ダート_平均連帯距離",    f"{prefix}_all_ダート_平均勝率",
-        f"{prefix}_male_ダート_重賞勝利数",   f"{prefix}_male_ダート_平均連帯距離",   f"{prefix}_male_ダート_平均勝率",
-        f"{prefix}_female_ダート_重賞勝利数", f"{prefix}_female_ダート_平均連帯距離", f"{prefix}_female_ダート_平均勝率",
-    ]
-    for c in new_cols:
-        df[c] = 0.0
+    # ================
+    # (A) レース単位で合計を集計 (groupby)
+    # ================
+    # group: (group_col, date, race_id, sex_class, surface_class)
+    agg_df = (
+        df2.groupby([group_col, "date", "race_id", "sex_class", "surface_class"], as_index=False)
+           .agg({
+               "重賞勝利フラグ":"sum",   # 重賞勝利数
+               "出走フラグ":"sum",         # 出走数
+               "勝利フラグ":"sum",           # 勝利数
+               "連対フラグ":"sum",          # 連対数
+               "連対距離":"sum",      # 連対距離
+           })
+    )
 
-    # レースを (date, race_id, 馬番) でソート
-    df = df.sort_values(["date", "race_id", "馬番"]).reset_index(drop=True)
+    # ================
+    # (B) pivotして wide化
+    #    => index=[group_col, date, race_id]
+    #    => columns=[(sex_class, surface_class)]
+    #       values=[重賞勝利フラグ, 出走フラグ, ...]
+    # ================
+    # ここで multi-index になるので、flatten後にわかりやすく rename する
+    pivot_cols = ["重賞勝利フラグ","出走フラグ","勝利フラグ","連対フラグ","連対距離"]
+    agg_df["sex_surface"] = agg_df["sex_class"] + "_" + agg_df["surface_class"]
 
-    sex_list = ['all', 'male', 'female']
-    surface_list = ['芝', 'ダート']
+    pivot_df = pd.pivot_table(
+        agg_df,
+        index=[group_col, "date", "race_id"],
+        columns="sex_surface",
+        values=pivot_cols,
+        aggfunc="sum",  # 重複があれば合計
+        fill_value=0
+    )
 
-    for s in sex_list:
-        for sur in surface_list:
-            if s == 'all':
-                # すべての馬 (male, female) を対象
-                mask = (df['surface_class'] == sur)
-            else:
-                # 該当する性別 + コースが sur の馬
-                mask = (df['surface_class'] == sur) & (df['sex_class'] == s)
+    # flatten
+    # 本来の想定通り、先に pivot_cols を付けてから sex_surface を付ける
+    pivot_df.columns = [f"{col}_{val}" for col, val in pivot_df.columns]
+    pivot_df.reset_index(inplace=True)
 
-            # 集計に使う列をサブセット
-            sub = df.loc[mask, [
-                group_col, 'is_grade_race_win', 'start_flag',
-                'win_flag', 'top2_flag', 'dist_for_top2'
-            ]].copy()
+    # ================
+    # (C) 時系列順に cumsum -> shift(1) で「当該レースより前の累積」に変換
+    # ================
+    pivot_df = pivot_df.sort_values([group_col, "date", "race_id"])
+    cumsum_cols = list(set(pivot_df.columns) - set([group_col, "date", "race_id"]))
 
-            # グループ単位で累積 → shift(1)
-            sub['cum_gwin']       = sub.groupby(group_col)['is_grade_race_win'].cumsum().shift(1).fillna(0)
-            sub['cum_starts']     = sub.groupby(group_col)['start_flag'].cumsum().shift(1).fillna(0)
-            sub['cum_wins']       = sub.groupby(group_col)['win_flag'].cumsum().shift(1).fillna(0)
-            sub['cum_top2']       = sub.groupby(group_col)['top2_flag'].cumsum().shift(1).fillna(0)
-            sub['cum_dist_top2']  = sub.groupby(group_col)['dist_for_top2'].cumsum().shift(1).fillna(0)
+    # group_col(父馬名など) 単位で累積
+    pivot_df[cumsum_cols] = (
+        pivot_df.groupby(group_col)[cumsum_cols]
+                .apply(lambda g: g.cumsum().shift(1).fillna(0))
+                .reset_index(drop=True)
+    )
 
-            # 出力する列名
-            col_gwin = f"{prefix}_{s}_{sur}_重賞勝利数"
-            col_dist = f"{prefix}_{s}_{sur}_平均連帯距離"
-            col_wr   = f"{prefix}_{s}_{sur}_平均勝率"
+    # ================
+    # (D) 累積したフラグから「重賞勝利数」「平均連対距離」「平均勝率」を計算
+    #     sex_surface ごとに計算したいので列をループ
+    # ================
+    # ピボット後の列例: 出走フラグ_all_芝, 勝利フラグ_all_芝, 連対フラグ_all_芝, 連対距離_all_芝, ...
+    # まず「gwin_cnt_〜」「avg_dist_〜」「win_rate_〜」列を作る
+    out_cols = {}  # 元列→作る列名の対応辞書
 
-            # 重賞勝利数の代入（index をキーにする）
-            df.loc[sub.index, col_gwin] = sub['cum_gwin']
+    # sex_surface の一覧を推定 (例: all_芝, male_芝, female_芝, all_ダート, male_ダート, ...)
+    # pivot前に .isin() してるので、そこまで多くないはず
+    set_sex_surf = set()
+    for c in pivot_df.columns:
+        if c.endswith("_芝") or c.endswith("_ダート"):
+            # 例: 出走フラグ_male_芝 => suffix = "male_芝"
+            #     勝利フラグ_all_ダート => suffix = "all_ダート"
+            # 接頭語: 重賞勝利フラグ, 出走フラグ, 勝利フラグ, 連対フラグ, 連対距離
+            pass_prefix = None
+            for pfx in pivot_cols:
+                if c.startswith(pfx+"_"):
+                    pass_prefix = pfx
+                    break
+            if pass_prefix:
+                suffix = c[len(pass_prefix)+1:]  # 例: c="出走フラグ_male_芝" なら suffix="male_芝"
+                set_sex_surf.add(suffix)
 
-            # 平均連帯距離 (連対数>0 の場合のみ計算)
-            valid_top2 = (sub['cum_top2'] > 0)
-            # まず 0 で埋めておく（既に 0.0 で初期化済みでもOK）
-            dist_series = pd.Series(0.0, index=sub.index)
-            dist_series[valid_top2] = (
-                sub.loc[valid_top2, 'cum_dist_top2'] / sub.loc[valid_top2, 'cum_top2']
-            )
-            df.loc[sub.index, col_dist] = dist_series
+    # sex_surfaceごとに、新たに計算する列を作る
+    for ss in set_sex_surf:
+        # 重賞勝利数: 重賞勝利フラグ_xxxx
+        col_gwin_in  = f"重賞勝利フラグ_{ss}"
+        col_starts   = f"出走フラグ_{ss}"
+        col_wins     = f"勝利フラグ_{ss}"
+        col_top2     = f"連対フラグ_{ss}"
+        col_dist2    = f"連対距離_{ss}"
 
-            # 平均勝率 (出走数>0 の場合のみ計算)
-            valid_starts = (sub['cum_starts'] > 0)
-            wr_series = pd.Series(0.0, index=sub.index)
-            wr_series[valid_starts] = (
-                sub.loc[valid_starts, 'cum_wins'] / sub.loc[valid_starts, 'cum_starts']
-            )
-            df.loc[sub.index, col_wr] = wr_series
+        # 出力列
+        col_gwin_out = f"gwin_cnt_{ss}"
+        col_avg_dist = f"avg_dist_{ss}"
+        col_win_rate = f"win_rate_{ss}"
 
-    # 使い終わった作業列を削除
-    df.drop([
-        'sex_class','surface_class','is_grade_race_win',
-        'start_flag','win_flag','top2_flag','dist_for_top2'
-    ], axis=1, inplace=True)
+        # ゼロ埋めしてから計算 (万一欠損があれば)
+        pivot_df[col_gwin_in] = pivot_df[col_gwin_in].fillna(0)
+        pivot_df[col_starts]  = pivot_df[col_starts].fillna(0)
+        pivot_df[col_wins]    = pivot_df[col_wins].fillna(0)
+        pivot_df[col_top2]    = pivot_df[col_top2].fillna(0)
+        pivot_df[col_dist2]   = pivot_df[col_dist2].fillna(0)
 
-    return df
+        pivot_df[col_gwin_out] = pivot_df[col_gwin_in]
+        
+        # 平均連対距離
+        pivot_df[col_avg_dist] = 0.0
+        mask_top2 = (pivot_df[col_top2] > 0)
+        pivot_df.loc[mask_top2, col_avg_dist] = (
+            pivot_df.loc[mask_top2, col_dist2] / pivot_df.loc[mask_top2, col_top2]
+        )
+
+        # 勝率
+        pivot_df[col_win_rate] = 0.0
+        mask_st = (pivot_df[col_starts] > 0)
+        pivot_df.loc[mask_st, col_win_rate] = (
+            pivot_df.loc[mask_st, col_wins] / pivot_df.loc[mask_st, col_starts]
+        )
+
+    # いらない元フラグ列( 重賞勝利フラグ_***, 出走フラグ_***, など )は落としてOK
+    drop_base_cols = []
+    for ss in set_sex_surf:
+        for pfx in pivot_cols:
+            c = f"{pfx}_{ss}"
+            if c in pivot_df.columns:
+                drop_base_cols.append(c)
+    pivot_df.drop(columns=drop_base_cols, errors="ignore", inplace=True)
+
+    # ================
+    # (E) 使いやすいようにリネーム (元の実装の列名に合わせる)
+    # ================
+    # 例: gwin_cnt_all_芝 -> father_all_芝_重賞勝利数  (prefix=father)
+    #     avg_dist_all_芝 -> father_all_芝_平均連対距離
+    #     win_rate_all_芝 -> father_all_芝_平均勝率
+    rename_map = {}
+    for ss in set_sex_surf:
+        rename_map[f"gwin_cnt_{ss}"]   = f"{prefix}_{ss}_重賞勝利数"       # father_牡馬_芝_重賞勝利数 など
+        rename_map[f"avg_dist_{ss}"]  = f"{prefix}_{ss}_平均連対距離"
+        rename_map[f"win_rate_{ss}"]  = f"{prefix}_{ss}_平均勝率"
+
+
+    # pivot_dfの列をリネーム
+    pivot_df.rename(columns=rename_map, inplace=True)
+
+    # 万一 "female_ダート" などが一度も存在しなかった場合に備え、必須列を0埋めで用意
+    needed_ss = [
+                "牡牝混合_芝", "牡馬_芝", "牝馬_芝",
+                "牡牝混合_ダート", "牡馬_ダート", "牝馬_ダート"
+            ]
+    for ss in needed_ss:
+        for outcol in ["重賞勝利数","平均連対距離","平均勝率"]:
+            colname = f"{prefix}_{ss}_{outcol}"
+            if colname not in pivot_df.columns:
+                pivot_df[colname] = 0.0
+
+    # ================
+    # (F) 元の df に merge して新しい列を付与
+    # ================
+    df_merged = pd.merge(
+        df,
+        pivot_df,
+        on=[group_col, "date", "race_id"],
+        how="left"
+    )
+
+    # マージできずに NaN になった列を 0 埋め
+    for c in rename_map.values():
+        if c in df_merged.columns:
+            df_merged[c] = df_merged[c].fillna(0)
+
+    # ================
+    # (G) 中間列を片付けて終了
+    # ================
+    df_merged.drop(
+        ["sex_class", "surface_class",
+         "重賞勝利フラグ","出走フラグ","勝利フラグ","連対フラグ","連対距離"],
+        axis=1, errors="ignore", inplace=True
+    )
+
+    # 元の順序に並べなおすなら最後にソートしてもいいわね
+    # df_merged = df_merged.sort_values(["date","race_id","馬番"]).reset_index(drop=True)
+
+    return df_merged
 
 
 def add_sire_age_range_stats_no_leak(
@@ -198,8 +303,8 @@ def add_sire_age_range_stats_no_leak(
         raise ValueError("DataFrameに '齢' 列がありません。")
 
     # 出走フラグ, 勝利フラグ
-    df["start_flag"] = df["着順"].notna().astype(int)
-    df["win_flag"] = (df["着順"] == 1).astype(int)
+    df["出走フラグ"] = df["着順"].notna().astype(int)
+    df["勝利フラグ"] = (df["着順"] == 1).astype(int)
 
     # 父馬名などの欠損補完
     df[group_col] = df[group_col].fillna("NoData")
@@ -212,8 +317,8 @@ def add_sire_age_range_stats_no_leak(
     agg_df = (
         df.groupby([group_col, "date", "race_id", "齢"], as_index=False)
           .agg(
-              starts_sum = ("start_flag", "sum"),
-              wins_sum   = ("win_flag", "sum")
+              starts_sum = ("出走フラグ", "sum"),
+              wins_sum   = ("勝利フラグ", "sum")
           )
     )
     # これで1行 = 1 (father_name, date, race_id, 齢)
@@ -309,7 +414,7 @@ def add_sire_age_range_stats_no_leak(
     df_merged.drop(columns=drop_cols, inplace=True)
 
     # 仕上げ
-    df_merged.drop(["start_flag","win_flag"], axis=1, errors="ignore", inplace=True)
+    df_merged.drop(["出走フラグ","勝利フラグ"], axis=1, errors="ignore", inplace=True)
 
     # 必要に応じて元の順序に並べ直す (date, race_id, 馬番 などで)
     # 例:
@@ -372,7 +477,7 @@ def create_extensive_pedigree_features(
     - 父馬・母父馬などの戦績集計を結合
     - (追加) 父産駒 / 母父産駒 / 母父が同じ馬 それぞれについて
        - 芝ダート別、かつ 性別(牡馬(せん含む)・牝馬・合計)別に
-         「重賞勝利数」「平均連帯距離」「平均勝率」をリークなしで計算し付与
+         「重賞勝利数」「平均連対距離」「平均勝率」をリークなしで計算し付与
 
     戻り値:
         血統特徴量が追加された df
@@ -462,7 +567,7 @@ def create_extensive_pedigree_features(
         how='left'
     )
 
-    # 8) (追加) 父産駒、母父産駒、母父が同じ馬 の「重賞勝利数/平均連帯距離/平均勝率」を
+    # 8) (追加) 父産駒、母父産駒、母父が同じ馬 の「重賞勝利数/平均連対距離/平均勝率」を
     #            芝・ダート別、性別(合計・牡馬(せん含)・牝馬)別々にリークなしで計算
     #    - father_name を group_col としてまとめる → prefix = 'father'
     #    - mother_father_name を group_col としてまとめる → prefix = 'mf'
