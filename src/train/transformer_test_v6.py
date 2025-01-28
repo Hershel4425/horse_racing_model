@@ -15,6 +15,7 @@ import copy
 import pickle
 import random
 from sklearn.calibration import calibration_curve
+import lightgbm as lgb
 
 # 乱数固定(再現性確保)
 random.seed(42)
@@ -294,23 +295,22 @@ class JockeyFeatureAutoEncoder(nn.Module):
 # =====================================================
 def split_data(df, id_col="race_id", target_col="着順", test_ratio=0.1, valid_ratio=0.1):
     """
-    ※ データを日付順でソートし、前のレースをtrain→valid→testと分割
+    ※ データを日付順でソートし、前のレースをtrain→testと分割
     why: 未来の情報が混入しないよう、時系列的に分割する目的
     """
     df = df.sort_values('date').reset_index(drop=True)
     race_ids = df[id_col].unique()
     dataset_len = len(race_ids)
-    test_cut = int(dataset_len * (1 - test_ratio))
-    valid_cut = int(test_cut * (1 - valid_ratio))
-    train_ids = race_ids[:valid_cut]
-    valid_ids = race_ids[valid_cut:test_cut]
-    test_ids = race_ids[test_cut:]
-
-    train_df = df[df[id_col].isin(train_ids)].copy()
-    valid_df = df[df[id_col].isin(valid_ids)].copy()
-    test_df = df[df[id_col].isin(test_ids)].copy()
-
+    test_cut = int(dataset_len*(1 - test_ratio))
+    train_ids = race_ids[:test_cut]
+    test_ids  = race_ids[test_cut:]
+    train_df  = df[df[id_col].isin(train_ids)].copy()
+    test_df   = df[df[id_col].isin(test_ids)].copy()
+    # valid_df は空の DataFrame を返す
+    valid_df = pd.DataFrame([])
+    
     return train_df, valid_df, test_df
+
 
 
 def prepare_data(
@@ -343,11 +343,12 @@ def prepare_data(
     # CSV読み込み
     df = pd.read_csv(data_path, encoding="utf_8_sig")
 
-    # # 古いデータを参考にしない
-    # df = df[df['date'] >= '2015-01-01']
+    # 古いデータを参考にしない
+    df = df[df['date'] >= '2015-01-01'].copy()
+    print('使用データサイズ：', df.shape)
 
     # 時系列Split
-    train_df, valid_df, test_df = split_data(df, id_col=id_col, target_col=target_col,
+    train_df, _, test_df = split_data(df, id_col=id_col, target_col=target_col,
                                              test_ratio=test_ratio, valid_ratio=valid_ratio)
 
     # 数値列・カテゴリ列を取得
@@ -361,22 +362,19 @@ def prepare_data(
 
     # 欠損埋め・型変換
     for c in cat_cols:
-        for d in [train_df, valid_df, test_df]:
+        for d in [train_df, test_df]:
             d[c] = d[c].fillna("missing").astype(str)
     for n in num_cols:
-        for d in [train_df, valid_df, test_df]:
+        for d in [train_df, test_df]:
             d[n] = d[n].fillna(0)
 
     # カテゴリをcodes化
     for c in cat_cols:
         train_df[c] = train_df[c].astype('category')
-        valid_df[c] = valid_df[c].astype('category')
         test_df[c] = test_df[c].astype('category')
         train_cat = train_df[c].cat.categories
-        valid_df[c] = pd.Categorical(valid_df[c], categories=train_cat)
         test_df[c] = pd.Categorical(test_df[c], categories=train_cat)
         train_df[c] = train_df[c].cat.codes
-        valid_df[c] = valid_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
 
     # PCA対象列を抽出（例：馬の芝成績系、騎手の芝成績系など）
@@ -389,7 +387,6 @@ def prepare_data(
 
     # カテゴリ特徴量(後でconcat)
     cat_train = train_df[cat_cols].values
-    cat_valid = valid_df[cat_cols].values
     cat_test  = test_df[cat_cols].values
 
     # ----------------------------------------------------
@@ -402,31 +399,25 @@ def prepare_data(
     if len(horse_cols)>0:
         scaler_horse.fit(train_df[horse_cols])
         horse_train_arr = scaler_horse.transform(train_df[horse_cols])
-        horse_valid_arr = scaler_horse.transform(valid_df[horse_cols])
         horse_test_arr  = scaler_horse.transform(test_df[horse_cols])
     else:
         horse_train_arr = np.zeros((len(train_df),0))
-        horse_valid_arr = np.zeros((len(valid_df),0))
         horse_test_arr  = np.zeros((len(test_df),0))
 
     if len(jockey_cols)>0:
         scaler_jockey.fit(train_df[jockey_cols])
         jockey_train_arr= scaler_jockey.transform(train_df[jockey_cols])
-        jockey_valid_arr= scaler_jockey.transform(valid_df[jockey_cols])
         jockey_test_arr = scaler_jockey.transform(test_df[jockey_cols])
     else:
         jockey_train_arr= np.zeros((len(train_df),0))
-        jockey_valid_arr= np.zeros((len(valid_df),0))
         jockey_test_arr = np.zeros((len(test_df),0))
 
     if len(other_num_cols)>0:
         scaler_other.fit(train_df[other_num_cols])
         other_train_arr = scaler_other.transform(train_df[other_num_cols])
-        other_valid_arr = scaler_other.transform(valid_df[other_num_cols])
         other_test_arr  = scaler_other.transform(test_df[other_num_cols])
     else:
         other_train_arr = np.zeros((len(train_df),0))
-        other_valid_arr = np.zeros((len(valid_df),0))
         other_test_arr  = np.zeros((len(test_df),0))
 
     # ----------------------------------------------------
@@ -470,11 +461,6 @@ def prepare_data(
             _, z_train_horse_t = ae_horse(x_train_tensor)
             z_train_horse = z_train_horse_t.numpy()
 
-            # valid
-            x_valid_tensor = torch.tensor(horse_valid_arr, dtype=torch.float32)
-            _, z_valid_horse_t = ae_horse(x_valid_tensor)
-            z_valid_horse = z_valid_horse_t.numpy()
-
             # test
             x_test_tensor = torch.tensor(horse_test_arr, dtype=torch.float32)
             _, z_test_horse_t = ae_horse(x_test_tensor)
@@ -482,7 +468,6 @@ def prepare_data(
     else:
         # 馬の特徴がそもそもない場合
         z_train_horse = np.zeros((len(train_df), 0))
-        z_valid_horse = np.zeros((len(valid_df), 0))
         z_test_horse  = np.zeros((len(test_df),  0))
 
     # ----------------------------------------------------
@@ -517,32 +502,24 @@ def prepare_data(
             _, z_train_jockey_t = ae_jockey(x_train_tensor)
             z_train_jockey = z_train_jockey_t.numpy()
 
-            # valid
-            x_valid_tensor = torch.tensor(jockey_valid_arr, dtype=torch.float32)
-            _, z_valid_jockey_t = ae_jockey(x_valid_tensor)
-            z_valid_jockey = z_valid_jockey_t.numpy()
-
             # test
             x_test_tensor = torch.tensor(jockey_test_arr, dtype=torch.float32)
             _, z_test_jockey_t = ae_jockey(x_test_tensor)
             z_test_jockey = z_test_jockey_t.numpy()
     else:
         z_train_jockey = np.zeros((len(train_df), 0))
-        z_valid_jockey = np.zeros((len(valid_df), 0))
         z_test_jockey  = np.zeros((len(test_df),  0))
 
     # ----------------------------------------------------
     # 4) 上記の圧縮ベクトル + その他数値 + カテゴリ特徴 を結合
     # ----------------------------------------------------
     X_train = np.concatenate([cat_train, other_train_arr, z_train_horse, z_train_jockey], axis=1)
-    X_valid = np.concatenate([cat_valid, other_valid_arr, z_valid_horse, z_valid_jockey], axis=1)
     X_test  = np.concatenate([cat_test,  other_test_arr,  z_test_horse,  z_test_jockey],  axis=1)
 
     # actual_num_dim = (otherの次元) + (馬の潜在次元) + (騎手の潜在次元)
     actual_num_dim = other_train_arr.shape[1] + z_train_horse.shape[1] + z_train_jockey.shape[1]
 
     print(f'X_train shape: {X_train.shape}')
-    print(f'X_valid shape: {X_valid.shape}')
     print(f'X_test  shape: {X_test.shape}')
     print(f'Actual numerical dimensions: {actual_num_dim}')
 
@@ -608,10 +585,9 @@ def prepare_data(
         return sequences, labels, masks, max_seq_len, race_ids_seq, horse_nums_seq
 
     train_seq, train_lab, train_mask, max_seq_len_train, train_rids_seq, train_horses_seq = create_sequences(train_df, X_train)
-    valid_seq, valid_lab, valid_mask, max_seq_len_valid, valid_rids_seq, valid_horses_seq = create_sequences(valid_df, X_valid)
     test_seq, test_lab, test_mask, max_seq_len_test, test_rids_seq, test_horses_seq = create_sequences(test_df, X_test)
 
-    max_seq_len = max(max_seq_len_train, max_seq_len_valid, max_seq_len_test)
+    max_seq_len = max(max_seq_len_train, max_seq_len_test)
 
     # パディングをそろえるための処理
     def pad_sequences(sequences, labels, masks, rids_seq, horses_seq, seq_len_target):
@@ -644,9 +620,6 @@ def prepare_data(
     train_seq, train_lab, train_mask, train_rids_seq, train_horses_seq = pad_sequences(
         train_seq, train_lab, train_mask, train_rids_seq, train_horses_seq, max_seq_len
     )
-    valid_seq, valid_lab, valid_mask, valid_rids_seq, valid_horses_seq = pad_sequences(
-        valid_seq, valid_lab, valid_mask, valid_rids_seq, valid_horses_seq, max_seq_len
-    )
     test_seq, test_lab, test_mask, test_rids_seq, test_horses_seq = pad_sequences(
         test_seq, test_lab, test_mask, test_rids_seq, test_horses_seq, max_seq_len
     )
@@ -657,10 +630,9 @@ def prepare_data(
 
     # Dataset化
     train_dataset = HorseRaceDataset(train_seq, train_lab, train_mask, train_rids_seq, train_horses_seq)
-    valid_dataset = HorseRaceDataset(valid_seq, valid_lab, valid_mask, valid_rids_seq, valid_horses_seq)
     test_dataset  = HorseRaceDataset(test_seq,  test_lab,  test_mask,  test_rids_seq,  test_horses_seq)
 
-    return (train_dataset, valid_dataset, test_dataset,
+    return (train_dataset, _, test_dataset,
             cat_cols, cat_unique, max_seq_len, 
             ae_latent_horse,         # ここは pca_dim_horse の代わり
             ae_latent_jockey,        # 同様
@@ -694,7 +666,6 @@ def run_train_time_split(
     ae_latent_horse=50,
     ae_latent_jockey=50,
     test_ratio=0.2,
-    valid_ratio=0.1,
     d_model=128,
     nhead=8,
     num_layers=6,
@@ -704,7 +675,8 @@ def run_train_time_split(
     # 今回のポイント: 複数の時系列Splitをさらに作ってモデルを増やす
     # 例として train-valid を time split し、その区間をずらしながら複数のモデルを作る想定
     # ここでは5回に分割する例
-    n_splits=5
+    n_splits=5,
+    use_lightgbm=False,
 ):
     """
     時系列を使った再分割 → 学習 → 各モデルの精度を計測 → 精度に応じて重み付け → 推論平均
@@ -713,10 +685,10 @@ def run_train_time_split(
     # 1) メインとなるデータを prepare_data で1回読み込み
     #    （全体をさらに段階的に time split して使う）
     # -------------------------------------------------
-    (base_train_dataset, base_valid_dataset, base_test_dataset,
+    (base_train_dataset, _, base_test_dataset,
      cat_cols, cat_unique, 
      max_seq_len, 
-     ae_dim_horse, ae__dim_jockey,
+     ae_dim_horse, ae_dim_jockey,
      _,
      actual_num_dim, _, _, _,
      scaler_horse, scaler_jockey, scaler_other,
@@ -729,7 +701,7 @@ def run_train_time_split(
         ae_latent_horse=ae_latent_horse,
         ae_latent_jockey=ae_latent_jockey,
         test_ratio=test_ratio,
-        valid_ratio=valid_ratio
+        valid_ratio=0.0 # split_data で valid は作らないようにする
     )
 
     # デバイス選択
@@ -741,33 +713,75 @@ def run_train_time_split(
         device = torch.device("cpu")
 
     # -------------------------------------------------
-    # 2) train_part(= train_dataset + valid_datasetの元データ)を
-    #    n_splits 個にさらに時系列分割するロジック
-    #    ※ 既に split_data で train/valid/test は分かれているが、
-    #      ここでさらに "train内部" を細かく split → それぞれで学習・評価
-    #    ※ 実際には train_df やdf_train_part からレースID順に区切る
+    # 2) train_part(= train_df) をさらに n_splits 回に分割し、
+    #    i番目スプリットを valid として残りを train にする時系列分割
+    #    (test_df はすでに tail から分割済みなので除外)
     # -------------------------------------------------
     # base_train_dataset は df_train_part がベースになっているが、
     #  ここでさらに race_id 日付順にいくつかに分割して学習する例を簡易実装
 
     race_ids_sorted = df_train_part.sort_values('date')[id_col].unique()
-    chunk_size = len(race_ids_sorted) // n_splits
+    chunk_size = len(race_ids_sorted) // (n_splits + 1)
 
     # コンテナ
     models = []
     valid_losses_per_model = []
 
+    # LightGBM 用に別途モデルと valid_loss を管理する場合
+    lgb_models = []
+    lgb_valid_losses = []
+    
+    # 簡易的に multi-label を 6ターゲット同時に学習するため、
+    # 下記のように target を展開して各馬行に対するラベル列を作るなど
+    # (詳細ロジックは省略し、必要最小限の例のみ示す
+    
+    def _train_lgb_binary(X_train, y_train, X_val, y_val):
+        """
+        二値分類用のLightGBMを1つ学習し、valid損失(BCE)を返す簡易例。
+        """
+        params = {
+            'objective': 'binary',
+            'metric': 'binary_logloss',
+            'learning_rate': 0.05,
+            'num_leaves': 31,
+            'verbosity': -1,
+        }
+        dtrain = lgb.Dataset(X_train, label=y_train)
+        dvalid = lgb.Dataset(X_val, label=y_val, reference=dtrain)
+        gbm = lgb.train(params,
+                        dtrain,
+                        num_boost_round=500,
+                        valid_sets=[dtrain, dvalid],
+                        early_stopping_rounds=30,
+                        verbose_eval=False)
+        # validセットでの最終logloss
+        best_score = gbm.best_score['valid_1']['binary_logloss']
+        return gbm, best_score
+    
+    def _train_lgb_for_all6(X_train, Y_train, X_val, Y_val):
+        """
+        6種類のターゲット(Top1,Top3,Top5,Pop1,Pop3,Pop5)を個別に学習してまとめる例。
+        返り値: (list_of_gbm, mean_valid_loss)
+        """
+        g_list = []
+        losses = []
+        for i in range(6):
+            gbm_i, loss_i = _train_lgb_binary(X_train, Y_train[:, i], X_val, Y_val[:, i])
+            g_list.append(gbm_i)
+            losses.append(loss_i)
+        return g_list, float(np.mean(losses))
+
+
     for i in range(n_splits):
         # 例: i-th split の開始～終了
-        start_idx = i * chunk_size
-        end_idx = (i+1)*chunk_size if i < (n_splits-1) else len(race_ids_sorted)
+        end_idx = (i+1)*chunk_size
         # train用, valid用にレースIDを割り当て（例: 最後のチャンクをvalid相当にする等、いろいろ方法あり）
         # ここでは単純に "最初のi個を除いた部分" を train, "該当のチャンク" を valid としてみる
         # why: time-basedに前方をtrain、後方をvalidationにするなど色々な方法が考えられるが、
         #      ここでは各チャンクを順番にvalidationとして扱う。より本格的な方法では
         #      train: 0～i-1チャンク, valid: iチャンク, test: i+1以降 などの形式も可能。
-        valid_race_ids = race_ids_sorted[start_idx:end_idx]
-        train_race_ids = race_ids_sorted[:start_idx]
+        valid_race_ids = race_ids_sorted[end_idx:]
+        train_race_ids = race_ids_sorted[:end_idx]
 
         # ただしi=0の場合は train_race_idsが空にならないようにするなど実運用では工夫
         if len(train_race_ids) == 0:
@@ -879,6 +893,35 @@ def run_train_time_split(
         models.append(model)
         valid_losses_per_model.append(best_loss)
 
+        # ------------------------------
+        # (Optional) LightGBM の学習・検証
+        # ------------------------------
+        if use_lightgbm:
+            # サンプルとして、train/valid データセットから 2次元 (batch*seq, features) に変換し、
+            # ラベル(top1~pop5)も同様に展開して学習するイメージ
+            def dataset_to_2d(subset):
+                """
+                与えられた subset(HorseRaceDataset のサブセット) から
+                (N, feature_dim), (N,6) を取り出す簡易例
+                (マスクされたパディング部分を除外し、一列に詰める)
+                """
+                arr_X = []
+                arr_Y = []
+                for seq, lab, m, _, _ in subset:
+                    # m=Trueの部分のみ取り出し
+                    valid_idx = m.nonzero().squeeze(-1)
+                    arr_X.append(seq[valid_idx].numpy())
+                    arr_Y.append(lab[valid_idx].numpy())
+                X_2d = np.concatenate(arr_X, axis=0)
+                Y_2d = np.concatenate(arr_Y, axis=0)
+                return X_2d, Y_2d
+            X_train_2d, Y_train_2d = dataset_to_2d(sub_train_dataset)
+            X_val_2d,   Y_val_2d   = dataset_to_2d(sub_valid_dataset)
+
+            gbms, avg_loss_lgb = _train_lgb_for_all6(X_train_2d, Y_train_2d, X_val_2d, Y_val_2d)
+            lgb_models.append(gbms)            # gbms は [gbm_top1, gbm_top3, ..., gbm_pop5] のリスト
+            lgb_valid_losses.append(avg_loss_lgb)
+
     # -------------------------------------------------
     # 3) ここまでで n_splits 個のモデルを取得、各モデルのvalid loss(または精度など)
     #    に応じて重み付きアンサンブルを行う
@@ -888,11 +931,35 @@ def run_train_time_split(
     # 万が一0割を防ぐ
     eps = 1e-6
     inv_losses = 1.0 / (valid_losses_np + eps)
-    weights = inv_losses / inv_losses.sum()
+    weights_transformer = inv_losses / inv_losses.sum()
+
+    # LightGBM 用の重み
+    if use_lightgbm and len(lgb_valid_losses) > 0:
+        lgb_losses_np = np.array(lgb_valid_losses)
+        inv_losses_lgb = 1.0 / (lgb_losses_np + eps)
+        weights_lgb = inv_losses_lgb / inv_losses_lgb.sum()
+    else:
+        weights_lgb = []
+
+    # 全モデルまとめて重みづけするために配列を合体
+    all_models   = []
+    all_weights  = []
+    for i, m in enumerate(models):
+        all_models.append(m)
+        all_weights.append(weights_transformer[i])
+    if use_lightgbm:
+        for i, gbm_list in enumerate(lgb_models):
+            all_models.append(gbm_list)  # gbm_list は6モデル同梱
+            all_weights.append(weights_lgb[i])
 
     print("\n=== Models & Weights (based on valid loss) ===")
-    for i, (loss_val, w) in enumerate(zip(valid_losses_per_model, weights)):
+    for i, (loss_val, w) in enumerate(zip(valid_losses_per_model, weights_transformer)):
         print(f" Model{i+1}: best_valid_loss={loss_val:.5f}, weight={w:.3f}")
+
+    if use_lightgbm:
+        for i, (loss_val, w) in enumerate(zip(lgb_valid_losses, weights_lgb)):
+            print(f" LGB Model{i+1}: best_valid_loss={loss_val:.5f}, weight={w:.3f}")
+
 
     # -------------------------------------------------
     # 4) テストデータでアンサンブル
@@ -916,6 +983,25 @@ def run_train_time_split(
         all_rids_list = []
         all_hnums_list = []
 
+        def _predict_proba_transformer(model, sequences, masks):
+            logits = model(sequences, src_key_padding_mask=~masks)
+            return torch.sigmoid(logits)
+        
+        def _predict_proba_lgb(gbm_list, X_np):
+            """
+            gbm_list は [gbm_top1, gbm_top3, gbm_top5, gbm_pop1, gbm_pop3, gbm_pop5]
+            6モデル分の predict_proba[:,1] を結合して返す
+            """
+            # shape: (N,6)
+            preds = []
+            for gbm_i in gbm_list:
+                proba_i = gbm_i.predict(X_np)  # 2クラス想定 => shape: (N,) or (N,2)
+                # 二値分類の場合 predict_proba が (N,2) になることが多いので注意
+                if proba_i.ndim == 2:
+                    proba_i = proba_i[:,1]
+                preds.append(proba_i.reshape(-1,1))
+            return np.concatenate(preds, axis=1)
+
         with torch.no_grad():
             for sequences, labels, masks, rids, hnums in loader:
                 sequences = sequences.to(device)
@@ -923,13 +1009,46 @@ def run_train_time_split(
                 masks     = masks.to(device)
                 # 各モデルの予測確率をweighted sum
                 ensemble_probs = None
-                for w, model in zip(weights, models):
-                    logits = model(sequences, src_key_padding_mask=~masks)
-                    probs = torch.sigmoid(logits)  # shape: (batch, seq_len, 6)
-                    if ensemble_probs is None:
-                        ensemble_probs = w * probs
-                    else:
-                        ensemble_probs += w * probs
+                for w, model_any in zip(weights, models):
+                    if isinstance(model_any, HorseTransformer):
+                         # Transformerの予測
+                         probs = _predict_proba_transformer(model_any, sequences, masks)
+                         if ensemble_probs is None:
+                             ensemble_probs = w * probs
+                         else:
+                             ensemble_probs += w * probs
+
+                    elif isinstance(model_any, list):
+                        # これは LGB の 6モデルリスト
+                        # まずマスクを除去した 2次元で sequences をまとめる
+                        # (batch, seq_len, feat) => (valid部分, feat)
+                        # パディング部分は無視しないといけないので、後で一括処理。
+                        # ここでは簡便化のために、いったん全要素を展開して予測 → 順番を再度詰めるイメージ
+                        # ただし、テスト時にはラベルチェックだけでOKなので
+                        # 予測確率だけマスク位置に合わせて再配置すればよいわ。
+                        # 省略のため、とりあえず全sequenceを一度に縦に並べる例を示す:
+                        seq_np = sequences.cpu().numpy()
+                        mask_np= masks.cpu().numpy()
+                        n_batch, seq_len, feat_dim = seq_np.shape
+                        valid_flat = []
+                        idx_map = []  # (batch_i, seq_i) -> flat_idx
+                        for b in range(n_batch):
+                            for s in range(seq_len):
+                                if mask_np[b,s]:
+                                    idx_map.append((b,s))
+                                    valid_flat.append(seq_np[b,s])
+                        X_flat = np.stack(valid_flat, axis=0)  # shape (total_valid, feat_dim)
+
+                        prob_lgb = _predict_proba_lgb(model_any, X_flat)  # shape (total_valid, 6)
+                        # seq_lenごとに戻す(パディング0は確率0で埋める等)
+                        prob_tensor = torch.zeros((n_batch, seq_len, 6), dtype=torch.float32, device=device)
+                        for i_pt, (b_i, s_i) in enumerate(idx_map):
+                            prob_tensor[b_i, s_i] = torch.from_numpy(prob_lgb[i_pt])
+
+                        if ensemble_probs is None:
+                            ensemble_probs = w * prob_tensor
+                        else:
+                            ensemble_probs += w * prob_tensor
 
                 # 損失計算
                 # why: アンサンブル後の確率に対するBCE lossを計算することで、
@@ -968,7 +1087,7 @@ def run_train_time_split(
         return avg_loss_each, all_probs, all_labels, all_rids, all_hnums
 
     test_loss_each6, all_probs, all_trues, all_rids, all_horses = test_evaluate_ensemble(
-        test_loader, models, weights
+        test_loader, models, all_weights
     )
 
     print("Test BCE Logloss each of 6 targets (Weighted Ensemble):",
@@ -1003,8 +1122,8 @@ def run_train_time_split(
     #####################################
     from torch.utils.data import ConcatDataset
 
-    # train, valid, test のデータセットを結合
-    full_dataset = ConcatDataset([base_train_dataset, base_valid_dataset, base_test_dataset])
+    # train, test のデータセットを結合
+    full_dataset = ConcatDataset([base_train_dataset, base_test_dataset])
 
     # すべてまとめた DataLoader
     full_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=False)
@@ -1015,7 +1134,7 @@ def run_train_time_split(
     # すでに学習済みの models, weights を流用し、
     # test_evaluate_ensemble と同じ要領で予測を実施
     full_loss_each6, all_probs_full, all_trues_full, all_rids_full, all_horses_full = \
-        test_evaluate_ensemble(full_loader, models, weights)
+        test_evaluate_ensemble(full_loader, models, all_weights)
 
     print("Full BCE Logloss each of 6 targets (Weighted Ensemble):",
         [f"{v:.4f}" for v in full_loss_each6])
