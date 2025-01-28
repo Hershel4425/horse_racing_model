@@ -16,6 +16,11 @@ import pickle
 import random
 from sklearn.calibration import calibration_curve
 import lightgbm as lgb
+import seaborn as sns
+
+from matplotlib import rcParams
+rcParams['font.family'] = 'sans-serif'
+rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
 # 乱数固定(再現性確保)
 random.seed(42)
@@ -648,7 +653,8 @@ def prepare_data(
             X_train.shape[1],  # 全特徴次元
             id_col,
             target_col,
-            train_df
+            train_df,
+            test_df
         )
 
 
@@ -693,7 +699,7 @@ def run_train_time_split(
      actual_num_dim, _, _, _,
      scaler_horse, scaler_jockey, scaler_other,
      _, _, _,
-     id_col, target_col, df_train_part) = prepare_data(
+     id_col, target_col, df_train_part, test_df) = prepare_data(
         data_path=data_path,
         target_col=target_col,
         pop_col=pop_col,
@@ -751,9 +757,7 @@ def run_train_time_split(
         gbm = lgb.train(params,
                         dtrain,
                         num_boost_round=500,
-                        valid_sets=[dtrain, dvalid],
-                        early_stopping_rounds=30,
-                        verbose_eval=False)
+                        valid_sets=[dtrain, dvalid])
         # validセットでの最終logloss
         best_score = gbm.best_score['valid_1']['binary_logloss']
         return gbm, best_score
@@ -806,7 +810,7 @@ def run_train_time_split(
         sub_valid_dataset = torch.utils.data.Subset(base_train_dataset, valid_indices)
 
         # Dataloader
-        train_loader = DataLoader(sub_train_dataset, batch_size=batch_size, shuffle=True)
+        train_loader = DataLoader(sub_train_dataset, batch_size=batch_size, shuffle=False)
         valid_loader = DataLoader(sub_valid_dataset, batch_size=batch_size, shuffle=False)
 
         # モデル初期化
@@ -1202,5 +1206,172 @@ def run_train_time_split(
     with open(SAVE_PATH_SCALER_OTHER, "wb") as f:
         pickle.dump(scaler_other, f)
 
+    visualize_predictions_and_return(test_df, pred_df)
+
     print("\n=== Final Ensemble done. Best single model index:", best_model_idx+1)
     return 0
+
+
+def visualize_predictions_and_return(test_df, pred_df):
+    """
+    test_df と pred_df を引数にとって、以下の可視化を行うわ。
+    
+    1) 6つの予測値（P_top1, P_top3, P_top5, P_pop1, P_pop3, P_pop5）について、
+       0から1まで0.05刻みで「予測値がX以上の馬をすべて買った場合の回収率」と
+       「購入数」を二重軸グラフでプロット
+
+    2) 着順予測(P_topX)と人気予測(P_popX) について、それぞれ (x=着順予測, y=人気予測) の
+       2次元ヒートマップを作成。
+       ・ヒートマップ1: そのビンに該当するデータ数
+       ・ヒートマップ2: そのビンに該当する馬をすべて買った時の回収率
+
+    【前提】
+    - 単勝オッズを '単勝' 列として持っていることを想定
+    - 回収率は単勝馬券(1着的中時)の払い戻し想定で計算
+      （例えば P_top3 で的中しても同じく「単勝」で計算しちゃうので、実際の馬券とは違うから注意ね）
+    """
+    #-------------------------------------------------
+    # 1) test_df と pred_df を結合して作業用の DataFrame を作る
+    #    （"race_id" と "馬番" で紐づけ）
+    #-------------------------------------------------
+    merged_df = pd.merge(
+        test_df,
+        pred_df,
+        on=["race_id", "馬番"],
+        how="inner"
+    )
+    # 念のため、単勝オッズが欠損なら除外 or 0埋めなど
+    merged_df = merged_df.dropna(subset=["単勝"])
+    # 単勝オッズが0だと回収率の計算ができないので、0を含む行があれば除く
+    # (もしオッズ=0 があり得ないなら気にしなくていいわ)
+    merged_df = merged_df[merged_df["単勝"] > 0].copy()
+
+    #-------------------------------------------------
+    # 2) しきい値を変えたときの回収率と購入数をグラフ化
+    #-------------------------------------------------
+    pred_target_pairs = [
+        ("P_top1", "T_top1"),
+        ("P_top3", "T_top3"),
+        ("P_top5", "T_top5"),
+        ("P_pop1", "T_pop1"),
+        ("P_pop3", "T_pop3"),
+        ("P_pop5", "T_pop5")
+    ]
+    thresholds = np.arange(0.0, 1.01, 0.05)
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle("予測値しきい別の購入数と回収率", fontsize=16)
+
+    for i, (pcol, tcol) in enumerate(pred_target_pairs):
+        row_idx = i // 3
+        col_idx = i % 3
+        ax = axes[row_idx, col_idx]
+
+        # 結果を記録するリスト
+        purchase_counts = []
+        rois = []
+
+        for th in thresholds:
+            # しきい値を超える行を購入
+            sub_df = merged_df[merged_df[pcol] >= th]
+            count_ = len(sub_df)
+            purchase_counts.append(count_)
+
+            if count_ > 0:
+                # （単勝馬券前提で）的中したら sub_df["単勝"]倍の払い戻し
+                # ここでは tcol=1 の行のみ的中とみなす
+                payoff = (sub_df[tcol] * sub_df["単勝"] * 100).sum()  # 購入額は100円想定
+                cost = count_ * 100
+                roi_ = payoff / cost
+            else:
+                roi_ = 0.0
+            rois.append(roi_)
+
+        # 購入数の棒グラフ
+        ax.bar(thresholds, purchase_counts, width=0.03, alpha=0.6, label="購入数", color="steelblue")
+        ax.set_ylabel("購入数")
+        ax.set_xlabel("予測値しきい")
+        ax.set_ylim([0, max(purchase_counts)*1.1 if len(purchase_counts) > 0 else 1])
+
+        # 回収率の折れ線グラフ（twinx）
+        ax2 = ax.twinx()
+        ax2.plot(thresholds, rois, marker="o", color="darkorange", label="回収率")
+        ax2.set_ylim([0, max(rois)*1.2 if len(rois) > 0 else 1])
+        ax2.set_ylabel("回収率")
+
+        ax.set_title(pcol)
+        # 凡例をまとめて表示したいなら工夫が必要だけど、とりあえず省略するわ
+
+    plt.tight_layout()
+    plt.show()
+
+    #-------------------------------------------------
+    # 3) 着順予測(P_topX)と人気予測(P_popX)の
+    #    2次元ヒートマップ（データ数＆回収率）
+    #-------------------------------------------------
+    # ビン定義（0～1を0.1刻み）
+    bins = np.arange(0.0, 1.1, 0.1)
+
+    # 3ペア分: (P_top1, P_pop1, T_top1), (P_top3, P_pop3, T_top3), (P_top5, P_pop5, T_top5)
+    top_pop_pairs = [
+        ("P_top1", "P_pop1", "T_top1"),
+        ("P_top3", "P_pop3", "T_top3"),
+        ("P_top5", "P_pop5", "T_top5"),
+    ]
+
+    fig2, axes2 = plt.subplots(3, 2, figsize=(12, 18))
+    fig2.suptitle("着順予測×人気予測のヒートマップ", fontsize=16)
+
+    for i, (ptop, ppop, tcol) in enumerate(top_pop_pairs):
+        # i行目のaxes2
+        ax_count = axes2[i, 0]
+        ax_roi = axes2[i, 1]
+
+        # x-bin, y-bin
+        x_bin = pd.cut(merged_df[ptop], bins=bins, right=False, include_lowest=True)
+        y_bin = pd.cut(merged_df[ppop], bins=bins, right=False, include_lowest=True)
+
+        group = merged_df.groupby([x_bin, y_bin])
+
+        # データ数ヒートマップ用
+        count_table = group.size().unstack(fill_value=0)
+
+        # 回収率ヒートマップ用
+        # payoff は tcol=1 なら "単勝"×100、cost は group.size()*100
+        sum_payoff = group.apply(lambda g: (g[tcol] * g["単勝"] * 100).sum())
+        sum_payoff_table = sum_payoff.unstack(fill_value=0)
+
+        count_table_ = count_table.reindex(index=count_table.index[::-1])  # y軸を上が大きい順に描くかどうか
+        sum_payoff_table_ = sum_payoff_table.reindex(index=sum_payoff_table.index[::-1])
+
+        # cost = count_table * 100
+        # → 2次元の同じ shape で回収率 = sum_payoff / cost
+        cost_table = count_table_ * 100
+        roi_table = sum_payoff_table_ / cost_table
+        roi_table = roi_table.fillna(0)
+
+        # データ数ヒートマップ
+        sns.heatmap(count_table_, ax=ax_count, annot=True, fmt="d", cmap="Blues")
+        ax_count.set_title(f"データ数 ({ptop} vs {ppop})")
+        ax_count.set_xlabel(ppop)
+        ax_count.set_ylabel(ptop)
+
+        # 回収率ヒートマップ
+        sns.heatmap(roi_table, ax=ax_roi, annot=True, fmt=".2f", cmap="RdYlGn")
+        ax_roi.set_title(f"回収率 ({ptop} vs {ppop})")
+        ax_roi.set_xlabel(ppop)
+        ax_roi.set_ylabel(ptop)
+
+        # 軸ラベルがビン名(object型)になってて長いと邪魔だから、軸カテゴリを短くするわ
+        # お好みで書式を整えてね
+        # xとyに対して同様にやる
+        x_labels = [str(lb) for lb in count_table_.columns]
+        ax_count.set_xticklabels(x_labels, rotation=45, ha='right')
+        ax_roi.set_xticklabels(x_labels, rotation=45, ha='right')
+
+        y_labels = [str(lb) for lb in count_table_.index]
+        ax_count.set_yticklabels(y_labels, rotation=0)
+        ax_roi.set_yticklabels(y_labels, rotation=0)
+
+    plt.tight_layout()
+    plt.show()
