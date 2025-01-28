@@ -1251,11 +1251,11 @@ def visualize_predictions_and_return(test_df, pred_df):
     #-------------------------------------------------
     pred_target_pairs = [
         ("P_top1", "T_top1"),
-        ("P_top3", "T_top3"),
-        ("P_top5", "T_top5"),
+        ("P_top3", "T_top1"),
+        ("P_top5", "T_top1"),
         ("P_pop1", "T_pop1"),
-        ("P_pop3", "T_pop3"),
-        ("P_pop5", "T_pop5")
+        ("P_pop3", "T_pop1"),
+        ("P_pop5", "T_pop1")
     ]
     thresholds = np.arange(0.0, 1.01, 0.05)
 
@@ -1315,8 +1315,8 @@ def visualize_predictions_and_return(test_df, pred_df):
     # 3ペア分: (P_top1, P_pop1, T_top1), (P_top3, P_pop3, T_top3), (P_top5, P_pop5, T_top5)
     top_pop_pairs = [
         ("P_top1", "P_pop1", "T_top1"),
-        ("P_top3", "P_pop3", "T_top3"),
-        ("P_top5", "P_pop5", "T_top5"),
+        ("P_top3", "P_pop3", "T_top1"),
+        ("P_top5", "P_pop5", "T_top1"),
     ]
 
     fig2, axes2 = plt.subplots(3, 2, figsize=(12, 18))
