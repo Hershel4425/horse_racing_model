@@ -1375,19 +1375,19 @@ def edit_missing(df):
     df['過去平均上がり3F順位_missing'] = df['過去平均上がり3F順位'].isnull().astype(int)
     df['過去平均上がり3F順位'] = df['過去平均上がり3F順位'].fillna(0)
     
-    # タイム順位（0埋め＋フラグ）
-    df['タイム_missing'] = df['タイム'].isnull().astype(int)
-    df['タイム'] = df['タイム'].fillna(0)
+    # # タイム順位（0埋め＋フラグ）
+    # df['タイム_missing'] = df['タイム'].isnull().astype(int)
+    # df['タイム'] = df['タイム'].fillna(0)
 
-    # 体重増減率（0埋め＋フラグ）
-    df['馬体重増減率_missing'] = df['馬体重増減率'].isnull().astype(int)
-    df['馬体重増減率'] = df['馬体重増減率'].fillna(0)
-    df['馬体重増減_cumsum_missing'] = df['馬体重増減_cumsum'].isnull().astype(int)
-    df['馬体重増減_cumsum'] = df['馬体重増減_cumsum'].fillna(0)
-    df['馬体重増減_ma3_missing'] = df['馬体重増減_ma3'].isnull().astype(int)
-    df['馬体重増減_ma3'] = df['馬体重増減_ma3'].fillna(0)
-    df['馬体重_ma3_missing'] = df['馬体重_ma3'].isnull().astype(int)
-    df['馬体重_ma3'] = df['馬体重_ma3'].fillna(0)
+    # # 体重増減率（0埋め＋フラグ）
+    # df['馬体重増減率_missing'] = df['馬体重増減率'].isnull().astype(int)
+    # df['馬体重増減率'] = df['馬体重増減率'].fillna(0)
+    # df['馬体重増減_cumsum_missing'] = df['馬体重増減_cumsum'].isnull().astype(int)
+    # df['馬体重増減_cumsum'] = df['馬体重増減_cumsum'].fillna(0)
+    # df['馬体重増減_ma3_missing'] = df['馬体重増減_ma3'].isnull().astype(int)
+    # df['馬体重増減_ma3'] = df['馬体重増減_ma3'].fillna(0)
+    # df['馬体重_ma3_missing'] = df['馬体重_ma3'].isnull().astype(int)
+    # df['馬体重_ma3'] = df['馬体重_ma3'].fillna(0)
 
     # 最後に重複削除
     # 重複行削除
@@ -1447,8 +1447,8 @@ def run_feature():
     # 血統情報処理
     pedigree_df = pd.read_csv(PEDIGREE_ID_PATH, encoding="utf_8_sig")
     df = create_extensive_pedigree_features(df, pedigree_df)
-    # 体重について
-    df = create_weight_features(df)
+    # # 体重について
+    # df = create_weight_features(df)
     # 欠損値処理
     df = edit_missing(df)
 

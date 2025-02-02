@@ -324,7 +324,7 @@ def prepare_data(
     pop_col="人気",
     id_col="race_id",
     leakage_cols=None,
-    ae_latent_horse=50,   # PCAの次元の代わりに使う: 馬のAEの潜在次元
+    ae_latent_horse=50,   # PCAの次元の代りに使う: 馬のAEの潜在次元
     ae_latent_jockey=50,  # 騎手のAEの潜在次元
     test_ratio=0.1,
     valid_ratio=0.1
@@ -334,12 +334,14 @@ def prepare_data(
     """
     if leakage_cols is None:
         leakage_cols = [
-            '斤量','タイム','着差','単勝','上がり3F','馬体重','人気',
+            '斤量','タイム','着差','単勝','上がり3F','人気',
             'horse_id','jockey_id',
             'trainer_id',
-            '順位点','入線','1着タイム差','先位タイム差','5着着差','増減',
+            '馬体重', '増減', '単勝', # 未来データで取得が難しいもの
+            '順位点','入線','1着タイム差','先位タイム差','5着着差',
             '1C通過順位','2C通過順位','3C通過順位','4C通過順位','賞金','前半ペース','後半ペース','ペース','ペース_脚質'
-            '上がり3F順位','100m','200m','300m','400m','500m','600m','700m','800m','900m','1000m',
+            '上がり3F順位', '上がり3F順位_missing',
+            '100m','200m','300m','400m','500m','600m','700m','800m','900m','1000m',
             '1100m','1200m','1300m','1400m','1500m','1600m','1700m','1800m','1900m','2000m',
             '2100m','2200m','2300m','2400m','2500m','2600m','2700m','2800m','2900m','3000m',
             '3100m','3200m','3300m','3400m','3500m','3600m','horse_ability'
@@ -349,7 +351,7 @@ def prepare_data(
     df = pd.read_csv(data_path, encoding="utf_8_sig")
 
     # 古いデータを参考にしない
-    df = df[df['date'] >= '2015-01-01'].copy()
+    df = df[df['date'] >= '2017-01-01'].copy()
     print('使用データサイズ：', df.shape)
 
     # 時系列Split
@@ -439,7 +441,7 @@ def prepare_data(
 
         # 学習データをTorchDataset化
         horse_train_dataset = TensorDataset(torch.tensor(horse_train_arr, dtype=torch.float32))
-        horse_train_loader  = DataLoader(horse_train_dataset, batch_size=512, shuffle=True)
+        horse_train_loader  = DataLoader(horse_train_dataset, batch_size=512, shuffle=False)
 
         # 学習
         optimizer = torch.optim.Adam(ae_horse.parameters(), lr=1e-3, weight_decay=1e-5)
@@ -482,7 +484,7 @@ def prepare_data(
         ae_jockey = JockeyFeatureAutoEncoder(input_dim=jockey_train_arr.shape[1], latent_dim=ae_latent_jockey)
 
         jockey_train_dataset = TensorDataset(torch.tensor(jockey_train_arr, dtype=torch.float32))
-        jockey_train_loader  = DataLoader(jockey_train_dataset, batch_size=512, shuffle=True)
+        jockey_train_loader  = DataLoader(jockey_train_dataset, batch_size=512, shuffle=False)
 
         optimizer = torch.optim.Adam(ae_jockey.parameters(), lr=1e-3, weight_decay=1e-5)
         criterion = nn.MSELoss()
@@ -639,7 +641,7 @@ def prepare_data(
 
     return (train_dataset, _, test_dataset,
             cat_cols, cat_unique, max_seq_len, 
-            ae_latent_horse,         # ここは pca_dim_horse の代わり
+            ae_latent_horse,         # ここは pca_dim_horse の代り
             ae_latent_jockey,        # 同様
             6,                       # ターゲット数
             actual_num_dim, df, cat_cols, num_cols,
@@ -1029,7 +1031,7 @@ def run_train_time_split(
                         # パディング部分は無視しないといけないので、後で一括処理。
                         # ここでは簡便化のために、いったん全要素を展開して予測 → 順番を再度詰めるイメージ
                         # ただし、テスト時にはラベルチェックだけでOKなので
-                        # 予測確率だけマスク位置に合わせて再配置すればよいわ。
+                        # 予測確率だけマスク位置に合せて再配置すればよい。
                         # 省略のため、とりあえず全sequenceを一度に縦に並べる例を示す:
                         seq_np = sequences.cpu().numpy()
                         mask_np= masks.cpu().numpy()
@@ -1214,7 +1216,7 @@ def run_train_time_split(
 
 def visualize_predictions_and_return(test_df, pred_df):
     """
-    test_df と pred_df を引数にとって、以下の可視化を行うわ。
+    test_df と pred_df を引数にとって、以下の可視化を行う。
     
     1) 6つの予測値（P_top1, P_top3, P_top5, P_pop1, P_pop3, P_pop5）について、
        0から1まで0.05刻みで「予測値がX以上の馬をすべて買った場合の回収率」と
@@ -1243,8 +1245,10 @@ def visualize_predictions_and_return(test_df, pred_df):
     # 念のため、単勝オッズが欠損なら除外 or 0埋めなど
     merged_df = merged_df.dropna(subset=["単勝"])
     # 単勝オッズが0だと回収率の計算ができないので、0を含む行があれば除く
-    # (もしオッズ=0 があり得ないなら気にしなくていいわ)
+    # (もしオッズ=0 があり得ないなら気にしなくていい)
     merged_df = merged_df[merged_df["単勝"] > 0].copy()
+
+    n_races = merged_df["race_id"].nunique()
 
     #-------------------------------------------------
     # 2) しきい値を変えたときの回収率と購入数をグラフ化
@@ -1276,6 +1280,8 @@ def visualize_predictions_and_return(test_df, pred_df):
             sub_df = merged_df[merged_df[pcol] >= th]
             count_ = len(sub_df)
             purchase_counts.append(count_)
+            purchase_counts_per_race = [c / n_races for c in purchase_counts]
+
 
             if count_ > 0:
                 # （単勝馬券前提で）的中したら sub_df["単勝"]倍の払い戻し
@@ -1288,10 +1294,10 @@ def visualize_predictions_and_return(test_df, pred_df):
             rois.append(roi_)
 
         # 購入数の棒グラフ
-        ax.bar(thresholds, purchase_counts, width=0.03, alpha=0.6, label="購入数", color="steelblue")
-        ax.set_ylabel("購入数")
+        ax.bar(thresholds, purchase_counts_per_race, width=0.03, alpha=0.6, label="購入数", color="steelblue")
+        ax.set_ylabel("購入数/レース数")
         ax.set_xlabel("予測値しきい")
-        ax.set_ylim([0, max(purchase_counts)*1.1 if len(purchase_counts) > 0 else 1])
+        ax.set_ylim([0, max(purchase_counts_per_race)*1.1 if len(purchase_counts_per_race) > 0 else 1])
 
         # 回収率の折れ線グラフ（twinx）
         ax2 = ax.twinx()
@@ -1299,8 +1305,68 @@ def visualize_predictions_and_return(test_df, pred_df):
         ax2.set_ylim([0, max(rois)*1.2 if len(rois) > 0 else 1])
         ax2.set_ylabel("回収率")
 
+        # 的中率 ( = 的中馬数 / 購入馬数 )
+        # ここで tcol=1 の馬だけ数えて「的中数」を出す
+        accs = []
+        for th in thresholds:
+            sub_df = merged_df[merged_df[pcol] >= th]
+            count_ = len(sub_df)
+            if count_ > 0:
+                # tcol=1 になってる馬の数
+                hit_count = sub_df[tcol].sum()
+                acc_ = hit_count / count_
+            else:
+                acc_ = 0
+            accs.append(acc_)
+
+        ax2.plot(thresholds, accs, marker="x", color="green", label="的中率")
+
+        ax2.legend(loc="upper left")  # 凡例の位置は適当に
+
         ax.set_title(pcol)
-        # 凡例をまとめて表示したいなら工夫が必要だけど、とりあえず省略するわ
+        # 凡例をまとめて表示したいなら工夫が必要だけど、とりあえず省略する
+
+    plt.tight_layout()
+    plt.show()
+
+    # 人気と着順の予測の差分を用いる
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle("予測勝率と予測人気の差に対する購入数と回収率", fontsize=16)
+
+    n_races = merged_df["race_id"].nunique()
+
+    for i, N in enumerate([1, 3, 5]):
+        diff_col = merged_df[f"P_top{N}"] - merged_df[f"P_pop{N}"]
+        bins = np.arange(-1.0, 1.1, 0.1)
+        labels = (bins[:-1] + bins[1:]) / 2  # ビンの中央値をX軸用に
+
+        merged_df["diff_bin"] = pd.cut(diff_col, bins=bins, right=False)
+
+        group = merged_df.groupby("diff_bin")
+        count_ = group.size()  # 各ビンの馬数
+        payoff_ = group.apply(lambda g: (g["T_top1"] * g["単勝"] * 100).sum())  # T_top1で計算するならこんなイメージ
+        cost_ = count_ * 100
+        roi_ = payoff_ / cost_
+
+        # 各ビンの購入数を「レース数」で割る
+        purchase_counts_per_race = count_ / n_races
+
+        ax = axes[i]
+
+        # 購入数のバーグラフ
+        ax.bar(labels, purchase_counts_per_race, width=0.08, alpha=0.6, color="steelblue")
+        ax.set_ylabel("購入数/レース数")
+        ax.set_xlabel("P_top{N} - P_pop{N} (ビン中央値)")
+        ax.set_ylim([0, purchase_counts_per_race.max() * 1.2 if len(purchase_counts_per_race) > 0 else 1])
+
+        # 回収率の折れ線グラフ（twinx）
+        ax2 = ax.twinx()
+        ax2.plot(labels, roi_, marker="o", color="darkorange", label="回収率")
+        ax2.set_ylim([0, roi_.max() * 1.2 if len(roi_) > 0 else 1])
+        ax2.set_ylabel("回収率")
+
+        ax.set_title(f"(P_top{N} - P_pop{N}) vs 回収率")
 
     plt.tight_layout()
     plt.show()
@@ -1344,6 +1410,9 @@ def visualize_predictions_and_return(test_df, pred_df):
         count_table_ = count_table.reindex(index=count_table.index[::-1])  # y軸を上が大きい順に描くかどうか
         sum_payoff_table_ = sum_payoff_table.reindex(index=sum_payoff_table.index[::-1])
 
+        # ここで columns も同じにしたいなら:
+        sum_payoff_table_ = sum_payoff_table_.reindex(columns=count_table_.columns, fill_value=0)
+
         # cost = count_table * 100
         # → 2次元の同じ shape で回収率 = sum_payoff / cost
         cost_table = count_table_ * 100
@@ -1362,7 +1431,7 @@ def visualize_predictions_and_return(test_df, pred_df):
         ax_roi.set_xlabel(ppop)
         ax_roi.set_ylabel(ptop)
 
-        # 軸ラベルがビン名(object型)になってて長いと邪魔だから、軸カテゴリを短くするわ
+        # 軸ラベルがビン名(object型)になってて長いと邪魔だから、軸カテゴリを短くする
         # お好みで書式を整えてね
         # xとyに対して同様にやる
         x_labels = [str(lb) for lb in count_table_.columns]
