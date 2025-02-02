@@ -5,15 +5,21 @@ import numpy as np
 
 from IPython.display import display
 import matplotlib.pyplot as plt
+# ▼ 馬のシルエットを貼り付けるために追加
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 from matplotlib import rcParams
 rcParams['font.family'] = 'sans-serif'
 rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
+
 # ファイルパス設定
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")  # 特徴量CSVのパス
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250201202843.csv") 
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250202200147.csv") 
+
+HORSE_IMG_PATH = os.path.join(ROOT_PATH, "result/visals/horse-2.png")
+JOCKEY_IMG_PATH = os.path.join(ROOT_PATH, "result/visals/upper_body-2.png")
 
 def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED):
     # CSV読み込み
@@ -59,6 +65,107 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
         df_html = df_show[display_cols].sort_values('馬番').to_html(index=False)
         with open(ROOT_PATH + f'/result/visals/2024HS/{rid}.html', "w", encoding="utf-8") as f:
             f.write(df_html)
+
+        # #############################
+        # 可視化表示
+        # #############################   
+        # ───────────── カラーマッピングの準備 ─────────────
+        df_map = df_show[display_cols].copy()
+        # 可視化用のデータフレームのindexをリセットする
+        df_map = df_map.reset_index(drop=True)
+
+        # 馬と騎手のシルエット画像を読み込む(馬は必須で、騎手はなければNone)
+        horse_img = plt.imread(HORSE_IMG_PATH)
+
+        # ───────────── プロットの準備 ─────────────
+        # ---------------------------
+        # 表示用パラメータの設定
+        # ---------------------------
+        row_gap = 0.5          # 各行の間隔（縦方向）を縮める
+        scale = 40             # 横方向のスケール
+        left_margin = 5        # 基準となる左端の位置
+
+        # 画像の拡大率設定（お好みで調整してね）
+        horse_image_zoom = 0.10
+        jockey_image_zoom = 0.10
+
+        # 馬と騎手の画像は、各パスから読み込んでおくわ
+        horse_img = plt.imread(HORSE_IMG_PATH)
+        jockey_img = plt.imread(JOCKEY_IMG_PATH)
+
+        # プロットの準備
+        fig, ax = plt.subplots(figsize=(12, row_gap * len(df_map) + 2))
+
+        # ───────── 5%ごとの縦の点線を描く ─────────
+        # 5%から100%まで、5%刻みで描画するわ
+        for perc in np.arange(0, 105, 5):
+            x_pos = left_margin + (perc / 100) * scale
+            ax.axvline(x=x_pos, color='gray', linestyle=':', linewidth=1)
+
+        # ───────── 各馬（行）ごとの描画 ─────────
+        for i, row in df_map.iterrows():
+            # 各行の基準ラインのy座標
+            y_horse = len(df_map) * row_gap - i * row_gap
+            # 馬の1着以内率からx座標を算出
+            top1_value = float(row["1着以内率"].strip('%')) / 100
+            horse_x = left_margin + top1_value * scale
+            # 騎手画像は、馬画像とほぼ同じx、馬画像のすぐ上（間隔を縮める）
+            jockey_y = y_horse + 0.15
+
+            # ─ 馬の画像配置（枠線・色分けは無し）
+            horse_offset_img = OffsetImage(horse_img, zoom=horse_image_zoom)
+            ab_horse = AnnotationBbox(horse_offset_img, (horse_x, y_horse), frameon=False)
+            ax.add_artist(ab_horse)
+
+            # ─ 騎手の画像配置（こちらも枠線無し）
+            jockey_offset_img = OffsetImage(jockey_img, zoom=jockey_image_zoom)
+            ab_jockey = AnnotationBbox(jockey_offset_img, (horse_x, jockey_y), frameon=False)
+            ax.add_artist(ab_jockey)
+
+            # ─ テキストの配置 ─
+            # 馬名は馬画像より右にずらす（名前と画像が重ならないように調整）
+            name_offset = 2.5
+            ax.text(horse_x + name_offset, y_horse - 0.05, f'{row["馬名"]}',
+                    va='center', fontsize=9, color='black')
+            # 馬名の右側に馬レーティングを表示
+            rating_offset = name_offset + 6.0
+            ax.text(horse_x + rating_offset, y_horse - 0.05, f'{row["馬レーティング"]}',
+                    va='center', fontsize=9, color='blue')
+
+            # 枠番と馬番は、各馬の基準ラインの左側に「N枠M番」の形式で表示
+            ax.text(left_margin - 4, y_horse, f'{row["枠番"]}枠{row["馬番"]}番',
+                    va='center', fontsize=12, color='purple')
+
+            # 騎手の名前は、騎馬画像より右にずらす（名前と画像が重ならないように調整）
+            ax.text(horse_x + name_offset, y_horse + 0.05, f'{row["騎手"]}',
+                    ha='center', va='bottom', fontsize=9, color='black')
+            # 騎手の名前の右側に騎手レーティングを表示
+            ax.text(horse_x + rating_offset, y_horse + 0.05, f'{row["騎手レーティング"]}',
+                    ha='left', va='bottom', fontsize=9, color='orangered')
+
+            # 右端に、1着以内率と1人気以内率の差分を表示
+            top1_percent = float(row["1着以内率"].strip('%'))
+            pop1_percent = float(row["1人気以内率"].strip('%'))
+            diff = top1_percent - pop1_percent
+            ax.text(left_margin + scale * 1.1 - 8, y_horse + 0.1, f'1着以内率: {top1_percent:.1f}%',
+                    va='center', fontsize=12, color='green')
+            ax.text(left_margin + scale * 1.1 - 8, y_horse - 0.1, f'差: {diff:.1f}%',
+                    va='center', fontsize=12, color='green')
+
+        # ───────── 軸・レイアウトの調整 ─────────
+        ax.set_xlim(0 , left_margin + scale * 1.1)
+        ax.set_ylim(0, len(df_map) * row_gap + 1)
+        ax.set_xlabel('パフォーマンス指標（基準は左端）')
+        ax.set_yticks([])
+        ax.set_title('馬・騎手パフォーマンスの可視化', fontsize=14)
+
+        plt.tight_layout()
+        plt.show()
+
+
+        # #############################
+        # レーダーチャート表示
+        # #############################    
 
         # レース全馬が同じ条件と想定して先頭行を参照
         course_type = df_show["コース種類"].iloc[0]
