@@ -1173,7 +1173,7 @@ def run_train_time_split(
     axes = axes.flatten()
     target_names = ["Top1", "Top3", "Top5", "Pop1", "Pop3", "Pop5"]
     for i in range(6):
-        prob_true, prob_pred = calibration_curve(all_trues[:, i], all_probs[:, i], n_bins=10)
+        prob_true, prob_pred = calibration_curve(all_trues[:, i], all_probs[:, i], n_bins=20)
         ax = axes[i]
         ax.plot(prob_pred, prob_true, marker='o', label='Calibration')
         ax.plot([0,1],[0,1], '--', color='gray', label='Perfect')
