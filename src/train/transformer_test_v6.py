@@ -1178,7 +1178,7 @@ def run_train_time_split(
         ax.plot(prob_pred, prob_true, marker='o', label='Calibration')
         ax.plot([0,1],[0,1], '--', color='gray', label='Perfect')
         ax2 = ax.twinx()
-        ax2.hist(all_probs[:, i], bins=20, range=(0,1), alpha=0.3, color='gray')
+        ax2.hist(all_probs[:, i], bins=40, range=(0,1), alpha=0.3, color='gray')
         ax.set_title(f'Calibration Curve ({target_names[i]})')
         ax.set_xlabel('Predicted Probability')
         ax.set_ylabel('True Probability')
@@ -1338,7 +1338,7 @@ def visualize_predictions_and_return(test_df, pred_df):
 
     for i, N in enumerate([1, 3, 5]):
         diff_col = merged_df[f"P_top{N}"] - merged_df[f"P_pop{N}"]
-        bins = np.arange(-1.0, 1.1, 0.1)
+        bins = np.arange(-1.0, 1.05, 0.05)
         labels = (bins[:-1] + bins[1:]) / 2  # ビンの中央値をX軸用に
 
         merged_df["diff_bin"] = pd.cut(diff_col, bins=bins, right=False)
@@ -1376,7 +1376,7 @@ def visualize_predictions_and_return(test_df, pred_df):
     #    2次元ヒートマップ（データ数＆回収率）
     #-------------------------------------------------
     # ビン定義（0～1を0.1刻み）
-    bins = np.arange(0.0, 1.1, 0.1)
+    bins = np.arange(0.0, 1.05, 0.05)
 
     # 3ペア分: (P_top1, P_pop1, T_top1), (P_top3, P_pop3, T_top3), (P_top5, P_pop5, T_top5)
     top_pop_pairs = [
