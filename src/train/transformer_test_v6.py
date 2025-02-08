@@ -1329,7 +1329,87 @@ def visualize_predictions_and_return(test_df, pred_df):
     plt.tight_layout()
     plt.show()
 
-    # 人気と着順の予測の差分を用いる
+
+    # --- 単勝倍率別のCalibration Curve をプロットする ---
+    # 単勝倍率のビン設定：0〜5, 5〜10, 10〜15, 15〜20, 20以上
+    bins_odds = [0, 5, 10, 15, 20, np.inf]
+    colors = ['blue', 'green', 'red', 'purple', 'orange']
+
+    plt.figure(figsize=(8, 6))
+
+    for i in range(len(bins_odds)-1):
+        lower = bins_odds[i]
+        upper = bins_odds[i+1]
+        # 該当ビンのデータを抽出
+        bin_mask = (merged_df['単勝'] >= lower) & (merged_df['単勝'] < upper)
+        if bin_mask.sum() == 0:
+            continue  # 該当データがなければスキップするわ
+        true_labels = merged_df.loc[bin_mask, 'T_top1'].values
+        pred_probs = merged_df.loc[bin_mask, 'P_top1'].values
+
+        # キャリブレーションカーブの算出（n_binsは適宜調整してね）
+        prob_true, prob_pred = calibration_curve(true_labels, pred_probs, n_bins=10)
+        
+        plt.plot(prob_pred, prob_true, marker='o', color=colors[i % len(colors)],
+                label=f'{lower}〜{upper}')
+
+    # 完璧なキャリブレーションの基準線
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Calibration')
+
+    plt.xlabel('Predicted Probability')
+    plt.ylabel('True Probability')
+    plt.title('Odds別 P_top1 の Calibration Curve')
+    plt.legend(title='単勝倍率')
+    plt.grid(True)
+    plt.show()
+
+
+    # --- 単勝倍率別の ROI Curve をプロットする ---
+    # ROIの計算: 各しきい値で、P_top1がその値以上の馬を購入した場合、
+    #               購入馬数×100円をコストとし、T_top1が1の場合に単勝倍率×100円の払い戻しとする例よ。
+
+    bins_odds = [0, 5, 10, 15, 20, np.inf]  # 単勝倍率のビン
+    colors = ['blue', 'green', 'red', 'purple', 'orange']
+    thresholds = np.arange(0.0, 1.01, 0.05)  # P_top1のしきい値
+
+    plt.figure(figsize=(8, 6))
+
+    for i in range(len(bins_odds) - 1):
+        lower = bins_odds[i]
+        upper = bins_odds[i + 1]
+        
+        # 該当ビンのデータを抽出
+        bin_mask = (merged_df['単勝'] >= lower) & (merged_df['単勝'] < upper)
+        if bin_mask.sum() == 0:
+            continue  # 該当データがなければスキップするわ
+        sub_df_bin = merged_df[bin_mask]
+        
+        roi_list = []
+        for th in thresholds:
+            # しきい値 th 以上の馬を抽出
+            df_th = sub_df_bin[sub_df_bin['P_top1'] >= th]
+            count_ = len(df_th)
+            if count_ > 0:
+                # 仮に1馬あたり100円の購入とする
+                payoff = (df_th['T_top1'] * df_th['単勝'] * 100).sum()
+                cost = count_ * 100
+                roi = payoff / cost
+            else:
+                roi = np.nan  # 購入馬がなければNaNにするか、0にしてもいい感じね
+            roi_list.append(roi)
+        
+        plt.plot(thresholds, roi_list, marker='o', color=colors[i % len(colors)],
+                label=f'{lower}〜{upper}')
+
+    plt.xlabel('P_top1 のしきい値')
+    plt.ylabel('回収率 (ROI)')
+    plt.title('単勝倍率別の ROI Curve (P_top1)')
+    plt.legend(title='単勝倍率')
+    plt.grid(True)
+    plt.show()
+
+
+    # --- 人気と着順の予測の差分を用いる ---
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     fig.suptitle("予測勝率と予測人気の差に対する購入数と回収率", fontsize=16)
@@ -1376,7 +1456,7 @@ def visualize_predictions_and_return(test_df, pred_df):
     #    2次元ヒートマップ（データ数＆回収率）
     #-------------------------------------------------
     # ビン定義（0～1を0.1刻み）
-    bins = np.arange(0.0, 1.05, 0.05)
+    bins = np.arange(0.0, 1.1, 0.1)
 
     # 3ペア分: (P_top1, P_pop1, T_top1), (P_top3, P_pop3, T_top3), (P_top5, P_pop5, T_top5)
     top_pop_pairs = [
@@ -1409,9 +1489,6 @@ def visualize_predictions_and_return(test_df, pred_df):
 
         count_table_ = count_table.reindex(index=count_table.index[::-1])  # y軸を上が大きい順に描くかどうか
         sum_payoff_table_ = sum_payoff_table.reindex(index=sum_payoff_table.index[::-1])
-
-        # ここで columns も同じにしたいなら:
-        sum_payoff_table_ = sum_payoff_table_.reindex(columns=count_table_.columns, fill_value=0)
 
         # cost = count_table * 100
         # → 2次元の同じ shape で回収率 = sum_payoff / cost
