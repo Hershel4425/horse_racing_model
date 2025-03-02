@@ -1458,7 +1458,7 @@ def visualize_predictions_and_return(test_df, pred_df):
     # ビン定義（0～1を0.1刻み）
     bins = np.arange(0.0, 1.1, 0.1)
 
-    # 3ペア分: (P_top1, P_pop1, T_top1), (P_top3, P_pop3, T_top3), (P_top5, P_pop5, T_top5)
+    # 3ペア分: (P_top1, P_pop1, T_top1), (P_top3, P_pop3, T_top1), (P_top5, P_pop5, T_top1)
     top_pop_pairs = [
         ("P_top1", "P_pop1", "T_top1"),
         ("P_top3", "P_pop3", "T_top1"),
@@ -1468,56 +1468,79 @@ def visualize_predictions_and_return(test_df, pred_df):
     fig2, axes2 = plt.subplots(3, 2, figsize=(12, 18))
     fig2.suptitle("着順予測×人気予測のヒートマップ", fontsize=16)
 
-    for i, (ptop, ppop, tcol) in enumerate(top_pop_pairs):
-        # i行目のaxes2
-        ax_count = axes2[i, 0]
-        ax_roi = axes2[i, 1]
+    # 統合する際のデータ数の閾値（例: 10未満なら統合）
+    min_count_threshold = 10
 
-        # x-bin, y-bin
+    for idx, (ptop, ppop, tcol) in enumerate(top_pop_pairs):
+        ax_count = axes2[idx, 0]
+        ax_roi = axes2[idx, 1]
+        
+        # ビン分け
         x_bin = pd.cut(merged_df[ptop], bins=bins, right=False, include_lowest=True)
         y_bin = pd.cut(merged_df[ppop], bins=bins, right=False, include_lowest=True)
-
+        
         group = merged_df.groupby([x_bin, y_bin])
-
+        
         # データ数ヒートマップ用
         count_table = group.size().unstack(fill_value=0)
-
-        # 回収率ヒートマップ用
-        # payoff は tcol=1 なら "単勝"×100、cost は group.size()*100
+        
+        # 回収率計算用（payoffは T_top1=1 なら "単勝"×100 とする）
         sum_payoff = group.apply(lambda g: (g[tcol] * g["単勝"] * 100).sum())
         sum_payoff_table = sum_payoff.unstack(fill_value=0)
-
-        count_table_ = count_table.reindex(index=count_table.index[::-1])  # y軸を上が大きい順に描くかどうか
+        
+        # y軸が大きい順にするため反転
+        count_table_ = count_table.reindex(index=count_table.index[::-1])
         sum_payoff_table_ = sum_payoff_table.reindex(index=sum_payoff_table.index[::-1])
-
-        # cost = count_table * 100
-        # → 2次元の同じ shape で回収率 = sum_payoff / cost
+        
+        # 元のROI計算（各セル単位）
         cost_table = count_table_ * 100
         roi_table = sum_payoff_table_ / cost_table
         roi_table = roi_table.fillna(0)
-
-        # データ数ヒートマップ
+        
+        # データ数が少ないセルは近傍と統合してROIを再計算する
+        merged_roi = roi_table.copy()
+        for i in range(roi_table.shape[0]):
+            for j in range(roi_table.shape[1]):
+                if count_table_.iloc[i, j] < min_count_threshold:
+                    # 近傍セル（3x3ウィンドウ）で合算
+                    i_min = max(0, i-1)
+                    i_max = min(roi_table.shape[0], i+2)
+                    j_min = max(0, j-1)
+                    j_max = min(roi_table.shape[1], j+2)
+                    window_count = count_table_.iloc[i_min:i_max, j_min:j_max].values.sum()
+                    window_cost = window_count * 100
+                    window_payoff = sum_payoff_table_.iloc[i_min:i_max, j_min:j_max].values.sum()
+                    if window_cost > 0:
+                        merged_roi.iloc[i, j] = window_payoff / window_cost
+                    else:
+                        merged_roi.iloc[i, j] = 0
+        
+        # ヒートマップの描画
         sns.heatmap(count_table_, ax=ax_count, annot=True, fmt="d", cmap="Blues")
         ax_count.set_title(f"データ数 ({ptop} vs {ppop})")
         ax_count.set_xlabel(ppop)
         ax_count.set_ylabel(ptop)
-
-        # 回収率ヒートマップ
-        sns.heatmap(roi_table, ax=ax_roi, annot=True, fmt=".2f", cmap="RdYlGn")
-        ax_roi.set_title(f"回収率 ({ptop} vs {ppop})")
+        
+        sns.heatmap(merged_roi, ax=ax_roi, annot=True, fmt=".2f", cmap="RdYlGn")
+        ax_roi.set_title(f"回収率 (統合後) ({ptop} vs {ppop})")
         ax_roi.set_xlabel(ppop)
         ax_roi.set_ylabel(ptop)
-
-        # 軸ラベルがビン名(object型)になってて長いと邪魔だから、軸カテゴリを短くする
-        # お好みで書式を整えてね
-        # xとyに対して同様にやる
+        
+        # 軸ラベルの調整
         x_labels = [str(lb) for lb in count_table_.columns]
         ax_count.set_xticklabels(x_labels, rotation=45, ha='right')
         ax_roi.set_xticklabels(x_labels, rotation=45, ha='right')
-
+        
         y_labels = [str(lb) for lb in count_table_.index]
         ax_count.set_yticklabels(y_labels, rotation=0)
         ax_roi.set_yticklabels(y_labels, rotation=0)
+        
+        # 回収率が1以上の領域をprintする（統合後）
+        print(f"\n{ptop} vs {ppop} の回収率が1以上の領域（統合後）:")
+        for r in range(merged_roi.shape[0]):
+            for c in range(merged_roi.shape[1]):
+                if merged_roi.iloc[r, c] >= 1:
+                    print(f"ビン (Top: {count_table_.index[r]}, Pop: {count_table_.columns[c]}) => ROI: {merged_roi.iloc[r, c]:.2f}, データ数: {count_table_.iloc[r, c]}")
 
     plt.tight_layout()
     plt.show()
