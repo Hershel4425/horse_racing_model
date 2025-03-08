@@ -621,9 +621,9 @@ def scrape_race_forecast(race_id, driver=None):
         race_result_df_list = pd.read_html(html_io, flavor='lxml')
         # レース予想ページは複数columnのdataframeになっているため取得後整形
         race_result_df = race_result_df_list[0][
-            ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎"]
+            ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "予想 オッズ"]
         ]
-        race_result_df.columns = ["枠", "馬番", "馬名", "性齢", "斤量", "騎手", "厩舎"]
+        race_result_df.columns = ["枠", "馬番", "馬名", "性齢", "斤量", "騎手", "厩舎", "単勝オッズ"]
         # race_idの追加
         race_result_df.loc[:, "race_id"] = race_id
         race_result_df = race_result_df.set_index("race_id")
