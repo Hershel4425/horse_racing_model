@@ -212,7 +212,8 @@ class CustomTransformerEncoderLayer(nn.Module):
         return src
 
 
-class HorseTransformer(nn.Module):
+# ★ 新しいモデルクラス：各ターゲットを独立ヘッドで予測する
+class HorseTransformerSeparateHeads(nn.Module):
     def __init__(self, cat_unique, cat_cols, max_seq_len,
                  num_dim=50, d_model=128, nhead=8, num_layers=4,
                  dropout=0.1, dim_feedforward=512):
@@ -235,13 +236,27 @@ class HorseTransformer(nn.Module):
             num_layers=num_layers
         )
 
-        self.fc_out = nn.Linear(d_model, 6)
+        # 3つは着順予測用、3つは人気予測用の各独立ヘッド
+        self.fc_top1 = nn.Linear(d_model, 1)
+        self.fc_top3 = nn.Linear(d_model, 1)
+        self.fc_top5 = nn.Linear(d_model, 1)
+        self.fc_pop1 = nn.Linear(d_model, 1)
+        self.fc_pop3 = nn.Linear(d_model, 1)
+        self.fc_pop5 = nn.Linear(d_model, 1)
 
     def forward(self, src, src_key_padding_mask=None):
         emb = self.feature_embedder(src)
         emb = self.pos_encoder(emb)
         out = self.transformer_encoder(emb, src_key_padding_mask=src_key_padding_mask)
-        logits = self.fc_out(out)
+        # 各ヘッドで独立に予測（出力形状: [batch, seq_len, 1]）
+        top1 = self.fc_top1(out)
+        top3 = self.fc_top3(out)
+        top5 = self.fc_top5(out)
+        pop1 = self.fc_pop1(out)
+        pop3 = self.fc_pop3(out)
+        pop5 = self.fc_pop5(out)
+        # 最終的に6チャネルとして連結（後続処理に合わせる）
+        logits = torch.cat([top1, top3, top5, pop1, pop3, pop5], dim=-1)
         return logits
     
 
@@ -736,10 +751,6 @@ def run_train_time_split(
     # コンテナ
     models = []
     valid_losses_per_model = []
-
-    # LightGBM 用に別途モデルと valid_loss を管理する場合
-    lgb_models = []
-    lgb_valid_losses = []
     
     # 簡易的に multi-label を 6ターゲット同時に学習するため、
     # 下記のように target を展開して各馬行に対するラベル列を作るなど
@@ -818,7 +829,7 @@ def run_train_time_split(
         valid_loader = DataLoader(sub_valid_dataset, batch_size=batch_size, shuffle=False)
 
         # モデル初期化
-        model = HorseTransformer(
+        model = HorseTransformerSeparateHeads(
             cat_unique, cat_cols, max_seq_len,
             num_dim=actual_num_dim, d_model=d_model,
             nhead=nhead, num_layers=num_layers, dropout=dropout
@@ -855,9 +866,11 @@ def run_train_time_split(
                 optimizer.zero_grad()
                 scheduler.step()
                 outputs = model(sequences, src_key_padding_mask=~masks)
+
                 loss_raw = criterion(outputs, labels)
                 valid_mask = masks.unsqueeze(-1).expand_as(loss_raw)
                 loss = (loss_raw * valid_mask).sum() / valid_mask.sum()
+
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
@@ -901,34 +914,6 @@ def run_train_time_split(
         models.append(model)
         valid_losses_per_model.append(best_loss)
 
-        # ------------------------------
-        # (Optional) LightGBM の学習・検証
-        # ------------------------------
-        if use_lightgbm:
-            # サンプルとして、train/valid データセットから 2次元 (batch*seq, features) に変換し、
-            # ラベル(top1~pop5)も同様に展開して学習するイメージ
-            def dataset_to_2d(subset):
-                """
-                与えられた subset(HorseRaceDataset のサブセット) から
-                (N, feature_dim), (N,6) を取り出す簡易例
-                (マスクされたパディング部分を除外し、一列に詰める)
-                """
-                arr_X = []
-                arr_Y = []
-                for seq, lab, m, _, _ in subset:
-                    # m=Trueの部分のみ取り出し
-                    valid_idx = m.nonzero().squeeze(-1)
-                    arr_X.append(seq[valid_idx].numpy())
-                    arr_Y.append(lab[valid_idx].numpy())
-                X_2d = np.concatenate(arr_X, axis=0)
-                Y_2d = np.concatenate(arr_Y, axis=0)
-                return X_2d, Y_2d
-            X_train_2d, Y_train_2d = dataset_to_2d(sub_train_dataset)
-            X_val_2d,   Y_val_2d   = dataset_to_2d(sub_valid_dataset)
-
-            gbms, avg_loss_lgb = _train_lgb_for_all6(X_train_2d, Y_train_2d, X_val_2d, Y_val_2d)
-            lgb_models.append(gbms)            # gbms は [gbm_top1, gbm_top3, ..., gbm_pop5] のリスト
-            lgb_valid_losses.append(avg_loss_lgb)
 
     # -------------------------------------------------
     # 3) ここまでで n_splits 個のモデルを取得、各モデルのvalid loss(または精度など)
@@ -941,32 +926,17 @@ def run_train_time_split(
     inv_losses = 1.0 / (valid_losses_np + eps)
     weights_transformer = inv_losses / inv_losses.sum()
 
-    # LightGBM 用の重み
-    if use_lightgbm and len(lgb_valid_losses) > 0:
-        lgb_losses_np = np.array(lgb_valid_losses)
-        inv_losses_lgb = 1.0 / (lgb_losses_np + eps)
-        weights_lgb = inv_losses_lgb / inv_losses_lgb.sum()
-    else:
-        weights_lgb = []
-
     # 全モデルまとめて重みづけするために配列を合体
     all_models   = []
     all_weights  = []
     for i, m in enumerate(models):
         all_models.append(m)
         all_weights.append(weights_transformer[i])
-    if use_lightgbm:
-        for i, gbm_list in enumerate(lgb_models):
-            all_models.append(gbm_list)  # gbm_list は6モデル同梱
-            all_weights.append(weights_lgb[i])
 
     print("\n=== Models & Weights (based on valid loss) ===")
     for i, (loss_val, w) in enumerate(zip(valid_losses_per_model, weights_transformer)):
         print(f" Model{i+1}: best_valid_loss={loss_val:.5f}, weight={w:.3f}")
 
-    if use_lightgbm:
-        for i, (loss_val, w) in enumerate(zip(lgb_valid_losses, weights_lgb)):
-            print(f" LGB Model{i+1}: best_valid_loss={loss_val:.5f}, weight={w:.3f}")
 
 
     # -------------------------------------------------
@@ -1018,7 +988,7 @@ def run_train_time_split(
                 # 各モデルの予測確率をweighted sum
                 ensemble_probs = None
                 for w, model_any in zip(weights, models):
-                    if isinstance(model_any, HorseTransformer):
+                    if isinstance(model_any, HorseTransformerSeparateHeads):
                          # Transformerの予測
                          probs = _predict_proba_transformer(model_any, sequences, masks)
                          if ensemble_probs is None:
