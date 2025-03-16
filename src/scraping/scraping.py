@@ -620,9 +620,15 @@ def scrape_race_forecast(race_id, driver=None):
         html_io = StringIO(page_source)
         race_result_df_list = pd.read_html(html_io, flavor='lxml')
         # レース予想ページは複数columnのdataframeになっているため取得後整形
-        race_result_df = race_result_df_list[0][
-            ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "予想 オッズ"]
-        ]
+        if "予想 オッズ" in race_result_df_list[0].columns:
+            race_result_df = race_result_df_list[0][
+                ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "予想 オッズ"]
+            ]
+        # 前日発売があるレースは予想オッズで無くなる
+        else:
+            race_result_df = race_result_df_list[0][
+                ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "オッズ 更新"]
+            ]
         race_result_df.columns = ["枠", "馬番", "馬名", "性齢", "斤量", "騎手", "厩舎", "単勝オッズ"]
         # race_idの追加
         race_result_df.loc[:, "race_id"] = race_id

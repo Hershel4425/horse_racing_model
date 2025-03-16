@@ -384,6 +384,34 @@ def prepare_data(
         train_df[c] = train_df[c].cat.codes
         test_df[c] = test_df[c].cat.codes
 
+    # ★ ダウンサンプリング ★
+    # train_df内の各レースで、勝ち馬（着順==1）の単勝値に基づいて
+    # 単勝<=3, 3<単勝<=5, 5<単勝<=10, 10<単勝<=10, 20<単勝 のグループに分け、
+    # 最も件数が少ない「20<単勝」の件数に揃える（testは対象外）
+    if not train_df.empty:
+        winners = train_df[train_df["着順"] == 1].copy()
+        conditions = [
+            (winners["単勝"] <= 3),
+            (winners["単勝"] > 3) & (winners["単勝"] <= 5),
+            (winners["単勝"] > 5) & (winners["単勝"] <= 10),
+            (winners["単勝"] > 10) & (winners["単勝"] <= 20),
+            (winners["単勝"] > 20)
+        ]
+        bins_labels = ["<=3", "3-5", "5-10", "10-20", ">20"]
+        winners["odds_bin"] = np.select(conditions, bins_labels, default="unknown")
+        bin_counts = winners["odds_bin"].value_counts()
+        target_count = bin_counts.get(">20", 0)
+        sampled_race_ids = []
+        for label in bins_labels:
+            race_ids_in_bin = winners[winners["odds_bin"] == label]["race_id"].unique()
+            if len(race_ids_in_bin) > target_count:
+                sampled_ids = np.random.choice(race_ids_in_bin, target_count, replace=False)
+            else:
+                sampled_ids = race_ids_in_bin
+            sampled_race_ids.extend(sampled_ids)
+        train_df = train_df[train_df["race_id"].isin(sampled_race_ids)].copy()
+        print("Downsampled training data shape:", train_df.shape)
+
     # PCA対象列を抽出（例：馬の芝成績系、騎手の芝成績系など）
     pattern_horse = r'^(競走馬芝|競走馬ダート|単年競走馬芝|単年競走馬ダート)'
     pattern_jockey = r'^(騎手芝|騎手ダート|単年騎手芝|単年騎手ダート)'

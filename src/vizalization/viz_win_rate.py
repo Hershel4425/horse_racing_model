@@ -16,7 +16,7 @@ rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio'
 # ファイルパス設定
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")  # 特徴量CSVのパス
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250308191703.csv") 
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250316003206.csv") 
 
 HORSE_IMG_PATH = os.path.join(ROOT_PATH, "result/visals/horse-2.png")
 JOCKEY_IMG_PATH = os.path.join(ROOT_PATH, "result/visals/upper_body-2.png")
@@ -68,7 +68,7 @@ def visualize_win_rates(race_id, df1_path = DATA_PATH, df2_path = SAVE_PATH_PRED
         cons_0 = (df_show['P_top1_val']>=10)&(df_show['P_pop1_val']<=10)
         cons_1 = (df_show['P_top1_val']>=20)&(df_show['P_pop1_val']<=30)
         cons_2 = (df_show['P_top1_val']>=30)&(df_show['P_pop1_val']<=60)
-        cons_3 = (df_show['P_top1_val']>=40)&(df_show['P_pop1_val']<=90)
+        cons_3 = (df_show['P_top1_val']>=40)&(df_show['P_pop1_val']<=80)
         display(df_show.loc[cons_0|cons_1|cons_2|cons_3][display_cols].sort_values('馬番'))
         df_html = df_show[display_cols].sort_values('馬番').to_html(index=False)
         with open(ROOT_PATH + f'/result/visals/2025FS/{rid}.html', "w", encoding="utf-8") as f:

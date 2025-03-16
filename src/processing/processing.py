@@ -347,6 +347,7 @@ def process_win(result_df):
     print("-----単勝処理開始-----")
     result_df = result_df.rename(columns={"単勝オッズ": "単勝"})
     # ---は999にしておく
+    result_df.loc[result_df["単勝"] == "--", "単勝"] = "0"
     result_df.loc[result_df["単勝"] == "---", "単勝"] = "0"
     result_df.loc[result_df["単勝"].isnull(), "単勝"] = "0"
     result_df["単勝"] = result_df["単勝"].astype("float")
