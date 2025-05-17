@@ -1376,7 +1376,7 @@ def visualize_predictions_and_return(test_df, pred_df):
         pred_probs = merged_df.loc[bin_mask, 'P_top1'].values
 
         # キャリブレーションカーブの算出（n_binsは適宜調整してね）
-        prob_true, prob_pred = calibration_curve(true_labels, pred_probs, n_bins=10)
+        prob_true, prob_pred = calibration_curve(true_labels, pred_probs, n_bins=20)
         
         plt.plot(prob_pred, prob_true, marker='o', color=colors[i % len(colors)],
                 label=f'{lower}〜{upper}')
