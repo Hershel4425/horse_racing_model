@@ -16,7 +16,7 @@ rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meirio'
 # ファイルパス設定
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3"
 DATA_PATH = os.path.join(ROOT_PATH, "data/02_features/feature.csv")  # 特徴量CSVのパス
-SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250419200248.csv") 
+SAVE_PATH_PRED = os.path.join(ROOT_PATH, "result/predictions/transformer/20250517222912.csv") 
 
 HORSE_IMG_PATH = os.path.join(ROOT_PATH, "result/visals/horse-2.png")
 JOCKEY_IMG_PATH = os.path.join(ROOT_PATH, "result/visals/upper_body-2.png")

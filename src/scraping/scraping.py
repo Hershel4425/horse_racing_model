@@ -1112,6 +1112,9 @@ def run_scrape():
         print(
             f"{year}年のスクレイピング完了: 過去のID数={len(scrape_past_race_id_list)}, 未来のID数={len(scrape_future_race_id_list)}"
         )
+        # if len(scrape_future_race_id_list) ==0:
+        #     for i in range(12):
+        #         scrape_future_race_id_list.append(202505020801 + i)
 
         if year <= last_record_year:
             print(f"{year}年のレースIDは既に取得済みです。")
@@ -1120,6 +1123,9 @@ def run_scrape():
             print(f"{year}年のレースIDを追加しました。")
             new_race_id_list.append(scrape_past_race_id_list)
 
+        # new_race_id_list.append(202305020811)
+        for i in range(12):
+            scrape_future_race_id_list.append(202505020801 + i)
         future_race_id_list += scrape_future_race_id_list
 
     # scrapingするraceidの一覧をリスト化する
