@@ -1,7 +1,6 @@
 # データ取得に関係するプログラム
 
 import datetime
-import math
 import os
 import re
 import time
@@ -17,6 +16,15 @@ from selenium.webdriver.chrome.options import Options
 import chromedriver_binary  # driverのpath指定を省略するために必要  # noqa: F401
 from tqdm import tqdm
 from io import StringIO
+
+from scraper_pipeline import (
+    collect_race_ids,
+    scrape_past_races,
+    scrape_future_races,
+    scrape_horse_performance,
+    scrape_pedigree_data,
+    persist_data,
+)
 
 
 # 先頭あたりに
@@ -178,6 +186,12 @@ def get_driver():
     
 
     return driver
+
+
+def safe_concat(df_list, **kwargs):
+    """None を除外して concat するユーティリティ"""
+    non_null = [df for df in df_list if df is not None]
+    return pd.concat(non_null, **kwargs) if non_null else pd.DataFrame()
 
 
 @wait_interval(7)
@@ -644,20 +658,20 @@ def scrape_race_forecast(race_id, driver=None):
 
         # pandas.read_htmlを使用してテーブルを取得
         html_io = StringIO(page_source)
-        race_result_df_list = pd.read_html(html_io, flavor='lxml')
-        # レース予想ページは複数columnのdataframeになっているため取得後整形
-        if "予想 オッズ" in race_result_df_list[0].columns:
-            race_result_df = race_result_df_list[0][
-                ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "予想 オッズ"]
-            ]
-        # 前日発売があるレースは予想オッズで無くなる
-        else:
-            race_result_df = race_result_df_list[0][
-                ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "オッズ 更新"]
-            ]
+        dfs = pd.read_html(html_io, flavor='lxml')
+
+        base = dfs[0]
+
+        # ──★ 修正ポイント ★──
+        # オッズ列は最後の数値列に固定して抽出
+        num_cols = base.select_dtypes(include=["float", "int"]).columns
+        odds_col = num_cols[-1]          # 常に最後をオッズとみなす
+        base = base.rename(columns={odds_col: "単勝オッズ"})
+
+        race_result_df = base[["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎", "単勝オッズ"]]
         race_result_df.columns = ["枠", "馬番", "馬名", "性齢", "斤量", "騎手", "厩舎", "単勝オッズ"]
-        # race_idの追加
-        race_result_df.loc[:, "race_id"] = race_id
+        race_result_df["race_id"] = race_id
+
         race_result_df = race_result_df.set_index("race_id")
         race_result_df = race_result_df.reset_index()
 
@@ -846,8 +860,7 @@ def scrape_horse_past_performance(horse_id_list, driver=None):
             horse_past_performance[horse_id] = df
 
         except IndexError:
-            print(f"データベースを取得できないhorse_id: {horse_id}")
-            print(f"Exception\n{traceback.format_exc()}")
+            # データ未公開は想定内なので何も言わずスキップ
             continue
         except Exception:
             print(f"データベースを取得できないhorse_id: {horse_id}")
@@ -992,10 +1005,10 @@ def scrape_multiple_race_result(race_id_list, driver=None):
 
     # 結合
     try:
-        race_result_df = pd.concat(race_result_df_list)
-        odds_df = pd.concat(odds_df_list)
-        pace_df = pd.concat(pace_df_list)
-        race_info_df = pd.concat(race_info_df_list)
+        race_result_df = safe_concat(race_result_df_list)
+        odds_df = safe_concat(odds_df_list)
+        pace_df = safe_concat(pace_df_list)
+        race_info_df = safe_concat(race_info_df_list)
     except Exception:
         print("Exception\n" + traceback.format_exc())
         print(
@@ -1029,8 +1042,8 @@ def scrape_multiple_race_forecast(race_id_list, driver=None):
 
     # 結合
     try:
-        race_result_df = pd.concat(race_result_df_list)
-        race_info_df = pd.concat(race_info_df_list)
+        race_result_df = safe_concat(race_result_df_list)
+        race_info_df = safe_concat(race_info_df_list)
     except Exception:
         print("Exception\n" + traceback.format_exc())
         print(
@@ -1069,164 +1082,47 @@ def merge_and_save_df(new_df, existing_df_path, backup_df_path, encoding="utf_8_
     merged_df.to_csv(backup_df_path, encoding=encoding, index=False)
 
 
-def run_scrape():
-    """スクレイピングを一通り実行し、race_idを保存し、レースデータをcsv形式で保存する関数
+def run_scrape(
+    scrape_ids: bool = True,
+    scrape_past: bool = True,
+    scrape_future: bool = True,
+    scrape_horse: bool = True,
+    scrape_pedigree: bool = True,
+    save: bool = True,
+):
+    """必要なフェーズだけ動かせる統括関数"""
 
-    Args:
+    if scrape_ids:
+        past_ids, future_ids = collect_race_ids()
 
-    Returns:
+    if scrape_past and past_ids:
+        past_df = scrape_past_races(past_ids)
 
-    """
-    ##### race_idをスクレイピング
-    # 現在の年数を調べる
-    today_year = int(datetime.date.today().year)
+    if scrape_future and future_ids:
+        future_df = scrape_future_races(future_ids)
 
-    # 読み込み済みのrace_idを調べる
-    # CSV読み込み
-    df = pd.read_csv(RACE_RESULT_DF_PATH)
+    if scrape_horse and past_df is not None:
+        horse_perf_df = scrape_horse_performance(past_df, future_df)
 
-    # uniqueなrace_idの取得
-    unique_race_ids = df['race_id'].unique()
+    if scrape_pedigree and horse_perf_df is not None:
+        ped_df = scrape_pedigree_data(horse_perf_df)
 
-    # race_idを上4桁の年でグルーピング
-    year_dict = {}
-    for rid in unique_race_ids:
-        year = str(rid)[:4]
-        if year not in year_dict:
-            year_dict[year] = []
-        year_dict[year].append(rid)
-
-    # 年号順にソート
-    sorted_years = sorted(year_dict.keys())
-
-    # リストのリスト作成
-    past_race_id_list = [year_dict[y] for y in sorted_years]
-    last_record_year = len(past_race_id_list) + 2007
-
-    # race_idのスクレイピングを実行する
-    future_race_id_list = []
-    new_race_id_list = past_race_id_list.copy()
-
-    for year in range(last_record_year, today_year + 1):
-        scrape_past_race_id_list, scrape_future_race_id_list = scrape_race_id_list(year)
-        print(
-            f"{year}年のスクレイピング完了: 過去のID数={len(scrape_past_race_id_list)}, 未来のID数={len(scrape_future_race_id_list)}"
+    if save:
+        persist_data(
+            past=past_df,
+            future=future_df,
+            perf=horse_perf_df,
+            ped=ped_df,
         )
 
-        if year <= last_record_year:
-            print(f"{year}年のレースIDは既に取得済みです。")
-            new_race_id_list[year - 2008] = scrape_past_race_id_list
-        else:
-            print(f"{year}年のレースIDを追加しました。")
-            new_race_id_list.append(scrape_past_race_id_list)
+if __name__ == "__main__":
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--skip_past",  action="store_true")
+    p.add_argument("--only_future",action="store_true")
+    args = p.parse_args()
 
-    # scrapingするraceidの一覧をリスト化する
-    new_race_list = []
-    for i, year_race_ids in enumerate(new_race_id_list):
-        if i < len(past_race_id_list) and isinstance(past_race_id_list[i], list):
-            new_race_ids = list(set(year_race_ids) - set(past_race_id_list[i]))
-            print(f"{i + 2008}年の新しいレコード数: {len(new_race_ids)}")
-            new_race_list.extend(new_race_ids)
-        else:
-            print(f"{i + 2008}年の新しいレコード数: {len(year_race_ids)}")
-            new_race_list.extend(year_race_ids)
-
-    # レース結果のスクレイピングを実行する
-    new_race_result_df, new_odds_df, new_pace_df, new_race_info_df = (
-        scrape_multiple_race_result(new_race_list)
+    run_scrape(
+        scrape_past=not args.skip_past and not args.only_future,
+        scrape_future=not args.skip_past,
     )
-    new_odds_df = rename_odds_columns(new_odds_df)
-
-    # 競走馬idを取り出す
-    horse_id_list = [
-        int(horse_id)
-        for horse_id in list(new_race_result_df["horse_id"].unique())
-        if not math.isnan(horse_id)
-    ]
-
-    # 未来データのスクレイピングを実行する
-    race_forecast_df, future_race_info_df = scrape_multiple_race_forecast(
-        future_race_id_list, driver=get_driver()
-    )
-
-    # 未来データからのちの血統処理のため、未来データに存在する馬のidを取得する
-    future_horse_id_list = [
-        int(horse_id)
-        for horse_id in list(race_forecast_df["horse_id"].unique())
-        if not math.isnan(horse_id)
-    ]
-    # horse_id_listに未来データの馬のidを重複させずに追加する
-    horse_id_list = list(set(horse_id_list + future_horse_id_list))
-
-    # 過去のデータを読み込んで過去のレースにいない馬のidを取得する
-    if os.path.exists(RACE_RESULT_DF_PATH):
-        past_race_result_df = pd.read_csv(RACE_RESULT_DF_PATH, encoding="utf_8_sig")
-        # 後の血統読み込み処理のため、過去のレース結果に存在しない馬のidを取得する
-        new_horse_id_list = list(
-            set(horse_id_list)
-            - set(
-                [
-                    int(horse_id)
-                    for horse_id in list(past_race_result_df["horse_id"].unique())
-                    if not math.isnan(horse_id)
-                ]
-            )
-        )
-    else:
-        # 後の血統読み込み処理のため、過去のレース結果に存在しない馬のidをner_horse_id_listに格納する
-        new_horse_id_list = horse_id_list
-
-    ###### 過去のレース結果との結合処理
-    merge_and_save_df(
-        new_race_result_df, RACE_RESULT_DF_PATH, BACKUP_RACE_RESULT_DF_PATH
-    )
-    merge_and_save_df(new_odds_df, ODDS_DF_PATH, BACKUP_ODDS_DF_PATH)
-    merge_and_save_df(new_pace_df, PACE_DF_PATH, BACKUP_PACE_DF_PATH)
-    merge_and_save_df(new_race_info_df, RACE_INFO_DF_PATH, BACKUP_RACE_INFO_DF_PATH)
-
-    # 未来データはそのまま保存
-    race_forecast_df.to_csv(RACE_FORECAST_DF_PATH, encoding="utf_8_sig", index=False)
-    future_race_info_df.to_csv(
-        FUTURE_RACE_INFO_DF_PATH, encoding="utf_8_sig", index=False
-    )
-
-    # horse_idから競走馬過去成績をスクレイピングする
-    new_horse_past_performance_df = scrape_horse_past_performance(horse_id_list)
-    # 過去のスクレイピングデータと結合する
-    # 馬の過去成績データの結合して保存する
-    merge_and_save_df(
-        new_horse_past_performance_df,
-        HORSE_PAST_PERFORMANCE_DF_PATH,
-        BACKUP_HORSE_PAST_PERFORMANCE_DF_PATH,
-    )
-
-    # 過去にスクレイピング済みの馬を読み込む
-    if os.path.exists(PEDIGREE_DF_PATH):
-        try:
-            pedigree_df = pd.read_csv(PEDIGREE_DF_PATH)
-            # 'horse_id' カラムが存在することを確認してください
-            if 'horse_id' in pedigree_df.columns:
-                pedigree_horse_id_list = pedigree_df['horse_id'].unique().tolist()
-            else:
-                print(f"'horse_id' カラムが {PEDIGREE_DF_PATH} に存在しません。")
-                pedigree_horse_id_list = []
-        except Exception as e:
-            print(f"{PEDIGREE_DF_PATH} の読み込み中にエラーが発生しました: {e}")
-            pedigree_horse_id_list = []
-    else:
-        pedigree_horse_id_list = []
-
-
-    # new_horse_id_listのうち、pedigree_horse_id_listに存在しないhorse_idをリストにまとめる
-    horse_ids_to_scrape = list(set(new_horse_id_list) - set(pedigree_horse_id_list))
-
-    # horse_idから競走馬血統をスクレイピングする
-    try:
-        new_horse_pedigree_df = scrape_pedigree(horse_ids_to_scrape)
-
-        # ROOT_PATH + "/00_raw/pedigree/pedigree_df.csv" が存在する時、このデータフレームを読み込み、上記のpedigree_dfと結合して保存
-        # 馬の血統データの結合と保存
-        merge_and_save_df(new_horse_pedigree_df, PEDIGREE_DF_PATH, BACKUP_PEDIGREE_DF_PATH)
-    except Exception:
-        print("Exception\n" + traceback.format_exc())
-        print("競走馬血統データのスクレイピングでエラー")
