@@ -609,7 +609,7 @@ def scrape_race_result(race_id, driver=None):
         for df in df_list:
             if df is not None:  # pace_dfは競走中止がいる時Noneになるため
                 df["race_id"] = race_id
-                df = df.set_index("race_id")
+                df.set_index("race_id", inplace=True)
                 df = df.reset_index()
 
         # race_result_dfの列名が過去と異なるため修正
@@ -935,6 +935,8 @@ def scrape_pedigree(horse_id_list):
     pedigree_df.reset_index(inplace=True)
     pedigree_df.rename(columns={"index": "horse_id"}, inplace=True)
 
+    driver.quit() 
+
     return pedigree_df
 
 
@@ -1001,6 +1003,7 @@ def scrape_multiple_race_result(race_id_list, driver=None):
 
         # driverのインスタンスが切れないように、一定回数ごとに再起動
         if i % 100 == 0:
+            driver.quit()          # ← 旧ドライバをきちんと終了
             driver = get_driver()
 
     # 結合

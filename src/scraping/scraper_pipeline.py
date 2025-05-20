@@ -17,7 +17,6 @@ from typing import Dict, List, Tuple
 import pandas as pd
 
 from scraping import (  # noqa: E402
-    wait_interval,
     merge_and_save_df,
     scrape_race_id_list,
     scrape_multiple_race_result,
@@ -49,16 +48,6 @@ __all__ = [
     "persist_data",
 ]
 
-# ----------------------------------------------------------------------
-# ユーティリティ
-# ----------------------------------------------------------------------
-
-
-def _safe_concat(df_list: List[pd.DataFrame]) -> pd.DataFrame:
-    """None を除外して concat する簡易版."""
-    non_null = [df for df in df_list if df is not None]
-    return pd.concat(non_null) if non_null else pd.DataFrame()
-
 
 # ----------------------------------------------------------------------
 # 0. race_id 収集
@@ -85,8 +74,7 @@ def collect_race_ids(
     past_ids: list[int] = []
     future_ids: list[int] = []
 
-    for y in range(year_from, year_to + 1):
-        wait_interval(7)         # polite crawl
+    for y in range(year_from, year_to + 1):    # polite crawl
         p, f = scrape_race_id_list(y)
         if diff_only:
             p = [rid for rid in p if rid not in done_ids]
