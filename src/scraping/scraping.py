@@ -6,7 +6,7 @@ import os
 import re
 import time
 import traceback
-import random
+# import random
 
 import bs4
 import numpy as np
@@ -17,6 +17,26 @@ from selenium.webdriver.chrome.options import Options
 import chromedriver_binary  # driverのpath指定を省略するために必要  # noqa: F401
 from tqdm import tqdm
 from io import StringIO
+
+
+# 先頭あたりに
+from functools import wraps
+_last_access = 0
+
+def wait_interval(sec=10):
+    def deco(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            global _last_access
+            gap = sec - (time.time() - _last_access)
+            if gap > 0:
+                time.sleep(gap)
+            res = func(*args, **kwargs)
+            _last_access = time.time()
+            return res
+        return wrapper
+    return deco
+
 
 
 PARSER = "html5lib"  # beautifulsoupのparser
@@ -65,6 +85,7 @@ PEDIGREE_DF_PATH = os.path.join(ROOT_PATH, "00_raw/40_pedigree/pedigree_df.csv")
 BACKUP_PEDIGREE_DF_PATH = os.path.join(
     ROOT_PATH, f"00_raw/40_pedigree/backup/{DATE_STRING}_pedigree_df.csv"
 )
+
 
 
 class IdFormatError(Exception):
@@ -148,13 +169,18 @@ def get_driver():
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--incognito")  # シークレットモードを有効にする
+    # 読み込みを自分で待つので軽めの 'eager' に
+    options.page_load_strategy = "eager"
 
     # ブラウザーを起動
     driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(90)   # ←★ここを追加（好きな秒に）
+    
 
     return driver
 
 
+@wait_interval(7)
 def scrape_source_from_page(url, driver=None):
     """対象ページのソース取得
 
@@ -224,8 +250,8 @@ def scrape_race_id_from_date(date, driver=None):
 
     # race_idを格納するリスト
     race_id_list = list()
-    # 罪にならないようにsleepをつける
-    time.sleep(random.uniform(3, 10))
+    # # 罪にならないようにsleepをつける
+    # time.sleep(random.uniform(3, 10))
     # 開催日ページurl取得
     date = f"{date.year:04}{date.month:02}{date.day:02}"
     url = "https://race.netkeiba.com/top/race_list.html?kaisai_date=" + date
@@ -270,8 +296,8 @@ def scrape_soup_from_past_race_id(race_id, driver=None):
     if driver is None:
         driver = get_driver()
 
-    # 罪にならないようにsleepをつける
-    time.sleep(random.uniform(3, 10))
+    # # 罪にならないようにsleepをつける
+    # time.sleep(random.uniform(3, 10))
     url = "https://race.netkeiba.com/race/result.html?race_id=" + str(race_id)
     try:
         page_source = scrape_source_from_page(url, driver)
@@ -297,8 +323,8 @@ def scrape_soup_from_future_race_id(race_id, driver=None):
     if driver is None:
         driver = get_driver()
 
-    # 罪にならないようにsleepをつける
-    time.sleep(random.uniform(3, 10))
+    # # 罪にならないようにsleepをつける
+    # time.sleep(random.uniform(3, 10))
     url = "https://race.netkeiba.com/race/shutuba.html?race_id=" + str(race_id)
     try:
         page_source = scrape_source_from_page(url, driver)
@@ -518,8 +544,8 @@ def scrape_race_result(race_id, driver=None):
 
     # レース結果の取得
     try:
-        # 罪にならないようにsleepをつける
-        time.sleep(random.uniform(3, 10))
+        # # 罪にならないようにsleepをつける
+        # time.sleep(random.uniform(3, 10))
 
         # read_htmlが使えないのでseleniumで取得する
         driver.get(url)
@@ -784,7 +810,7 @@ def scrape_race_info(soup, race_id):
     return race_info_df
 
 
-def scrape_horse_past_performance(horse_id_list):
+def scrape_horse_past_performance(horse_id_list, driver=None):
     """馬の過去成績データを取得する関数
 
     Args:
@@ -793,16 +819,16 @@ def scrape_horse_past_performance(horse_id_list):
     Returns:
         horse_past_performance_df (DataFrame): 競走馬の過去レース結果が格納されたデータフレーム
     """
+    driver = driver or get_driver()   # 既存を使う
     horse_past_performance = dict()
 
     for horse_id in tqdm(horse_id_list):
         try:
-            # スクレイピングによる問題を防ぐためにスリープを設定
-            time.sleep(random.uniform(3, 10))
+            # # スクレイピングによる問題を防ぐためにスリープを設定
+            # time.sleep(random.uniform(3, 10))
             url = f"https://db.netkeiba.com/horse/{horse_id}"
 
             # read_htmlが使えないのでseleniumで取得する
-            driver = get_driver()
             driver.get(url)
             page_source = driver.page_source
 
@@ -839,6 +865,8 @@ def scrape_horse_past_performance(horse_id_list):
     horse_past_performance_df.reset_index(inplace=True)
     horse_past_performance_df.rename(columns={"index": "horse_id"}, inplace=True)
 
+    driver.quit()
+
     return horse_past_performance_df
 
 
@@ -854,8 +882,8 @@ def scrape_pedigree(horse_id_list):
     pedigree_dict = dict()
     for horse_id in tqdm(horse_id_list):
         try:
-            # 罪にならないようにsleepをつける
-            time.sleep(random.uniform(3, 10))
+            # # 罪にならないようにsleepをつける
+            # time.sleep(random.uniform(3, 10))
             url = f"https://db.netkeiba.com/horse/ped/{horse_id}"
 
             # read_htmlが使えないのでseleniumで取得する
