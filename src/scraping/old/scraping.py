@@ -337,53 +337,6 @@ def scrape_soup_from_future_race_id(race_id, driver=None):
     return soup
 
 
-# def scrape_idlist_from_race_result(soup):
-#     """レース結果ページのテーブルから馬や騎手の固有idを取得する関数
-
-#     Args:
-#         soup (soup): レース結果ページのsoup
-
-#     Returns:
-#         horse_id_list (list) : horse_idを格納したリスト
-#         jockey_id_list (list) : jockey_idを格納したリスト
-#         trainer_id_list(list) : trainer_idを格納したリスト
-#     """
-#     # idを格納するリスト
-#     idlist = list()
-#     horse_id_list = list()
-#     jockey_id_list = list()
-#     trainer_id_list = list()
-#     try:
-#         atag_list = soup.find("table", attrs={"summary": "全着順"}).find_all("a")
-#         for atag in atag_list:
-#             target_id = re.findall(r"\d+", atag["href"])
-#             idlist.append(target_id[0])
-#         # horse_idを取り出す
-#         for id in idlist:
-#             id = int(id)
-#             if len(str(id)) == 10:
-#                 id_format_check(id, "horse_id")
-#                 horse_id_list.append(id)
-#         # 重複を削除
-#         horse_id_list = sorted(set(horse_id_list), key=horse_id_list.index)
-#         # jockey_idを格納
-#         for id in idlist[1::3]:
-#             jockey_id = int(id)
-#             id_format_check(jockey_id, "jockey_id")
-#             jockey_id_list.append(jockey_id)
-#         # trainer_idを格納
-#         for id in idlist[2::3]:
-#             trainer_id = int(id)
-#             id_format_check(trainer_id, "trainer_id")
-#             trainer_id_list.append(trainer_id)
-#         # 各idlistの長さが合っているかチェック
-#         id_length_check(horse_id_list, jockey_id_list, trainer_id_list)
-#     except Exception:
-#         print(f"Exception\n{traceback.format_exc()}")
-#         print("馬や騎手のidを取得するところでエラー")
-
-#     return horse_id_list, jockey_id_list, trainer_id_list
-
 def scrape_idlist_from_race_result(soup):
     horse_id_list = []
     jockey_id_list = []
@@ -435,51 +388,6 @@ def scrape_idlist_from_race_result(soup):
 
     return horse_id_list, jockey_id_list, trainer_id_list
 
-
-# def scrape_idlist_from_race_forecast(soup):
-#     """レース予想ページのテーブルから馬や騎手の固有idを取得する関数
-
-#     Args:
-#         soup (soup): レース結果ページのsoup
-
-#     Returns:
-#         horse_id_list (list) : horse_idを格納したリスト
-#         jockey_id_list (list) : jockey_idを格納したリスト
-#         trainer_id_list(list) : trainer_idを格納したリスト
-#     """
-#     # idを格納するリスト
-#     idlist = list()
-#     horse_id_list = list()
-#     jockey_id_list = list()
-#     trainer_id_list = list()
-#     try:
-#         atag_list = soup.find("table").find_all("a")
-#         for atag in atag_list:
-#             target_id = re.findall(r"\d+", atag["href"])
-#             idlist.append(target_id)
-#         # 20241205追記
-#         # リストに['0']のリストが生まれるため、削除
-#         idlist = [item for item in idlist if item != ['0']]
-
-#         for horse in idlist[1::5]:
-#             horse_id = int(horse[0])
-#             id_format_check(horse_id, "horse_id")
-#             horse_id_list.append(horse_id)
-#         for jockey in idlist[2::5]:
-#             jockey_id = int(jockey[0])
-#             id_format_check(jockey_id, "jockey_id")
-#             jockey_id_list.append(jockey_id)
-#         for trainer in idlist[3::5]:
-#             trainer_id = int(trainer[0])
-#             id_format_check(trainer_id, "trainer_id")
-#             trainer_id_list.append(trainer_id)
-#         # 各idlistの長さが合っているかチェック
-#         id_length_check(horse_id_list, jockey_id_list, trainer_id_list)
-#     except Exception:
-#         print(f"Exception\n{traceback.format_exc()}")
-#         print("馬や騎手のidを取得するところでエラー")
-
-#     return horse_id_list, jockey_id_list, trainer_id_list
 
 def scrape_idlist_from_race_forecast(soup):
     horse_id_list = []
