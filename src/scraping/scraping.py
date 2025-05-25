@@ -11,6 +11,8 @@ import re
 import os
 from typing import List, Dict, Tuple, Optional
 import logging
+from io import StringIO
+import traceback
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -333,7 +335,7 @@ class NetKeibaScraper:
         # 新規IDを特定
         new_past = [rid for rid in past_ids if rid not in existing_ids]
         new_future = [rid for rid in future_ids if rid not in existing_ids]
-        
+
         return new_past, new_future
     
 
@@ -654,29 +656,86 @@ class NetKeibaScraper:
                     
         return pd.DataFrame(past_performance), pd.DataFrame(pedigree_data)
     
-    def _extract_horse_past_data(self, horse_id: str) -> List[Dict]:
-        """馬の過去成績を抽出
-        
-        Args:
-            horse_id: 馬ID
-            
-        Returns:
-            List[Dict]: 過去成績データのリスト
+    def _extract_horse_past_data(self, horse_id: str) -> list[dict]:
         """
-        # TODO: 実際のページ構造に応じて実装
-        return []
-    
-    def _extract_horse_pedigree_data(self, horse_id: str) -> Dict:
-        """馬の血統情報を抽出
-        
-        Args:
-            horse_id: 馬ID
-            
-        Returns:
-            Dict: 血統情報データ
+        netkeiba 馬DBページから過去レース結果をリスト形式で抽出する
+
+        Returns
+        -------
+        list[dict]
+            1 レース＝1 dict（horse_id, 日付, 開催, R, レース名, ペース, 賞金）
         """
-        # TODO: 実際のページ構造に応じて実装
-        return {}
+        results: list[dict] = []
+        try:
+            # _safe_request() が driver.get() している前提
+            page_source = self.driver.page_source
+            tbls = pd.read_html(StringIO(page_source), flavor="lxml")
+
+            # race 結果テーブルは 3 番目（index=3）だが、
+            # 出走経験のない馬は「受賞歴」テーブルが先頭に来るのでずれることがある。
+            df = tbls[3] if len(tbls) > 3 else None
+            if df is not None and df.columns[0] == "受賞歴":
+                # 受賞歴テーブルをスキップ
+                df = tbls[4] if len(tbls) > 4 else None
+
+            if df is None or "日付" not in df.columns:
+                # 成績テーブルが存在しない＝未出走
+                return results
+
+            # 欲しい列だけに絞り、馬 ID を付けて dict 化
+            df = df[["日付", "開催", "R", "レース名", "ペース", "賞金"]]
+            for _, row in df.iterrows():
+                results.append(
+                    {
+                        "horse_id": horse_id,
+                        "日付": row["日付"],
+                        "開催": row["開催"],
+                        "R": row["R"],
+                        "レース名": row["レース名"],
+                        "ペース": row["ペース"],
+                        "賞金": row["賞金"],
+                    }
+                )
+        except Exception:
+            logger.warning(f"past data parse error: {horse_id}\n{traceback.format_exc()}")
+        return results
+
+    # ──────────────────────────
+    # ■ 血統 ───────────────────
+    # ──────────────────────────
+    def _extract_horse_pedigree_data(self, horse_id: str) -> dict:
+        """
+        netkeiba 馬DB「/ped/」ページの 5 代血統テーブルを 1 行 62 列に展開して返す
+
+        Returns
+        -------
+        dict
+            {"horse_id": 0000..., "pedigree_0": "父", … "pedigree_61": "5×5 末尾"}
+        """
+        try:
+            page_source = self.driver.page_source
+            tbls = pd.read_html(StringIO(page_source), flavor="lxml")
+            df = tbls[0]                              # 5 代血統表は常に 0 番目 :contentReference[oaicite:0]{index=0}
+
+            # 行・列を「世代」順に再構成（現行関数と同じ）
+            generations = {}
+            for col in reversed(range(5)):  # 4 → 0
+                generations[col] = df[col]
+                df = df.drop(columns=[col]).drop_duplicates()
+
+            ped_series = (
+                pd.concat([generations[i] for i in range(5)])
+                .reset_index(drop=True)
+                .rename(horse_id)
+            )
+
+            ped_dict = {"horse_id": horse_id}
+            ped_dict.update(ped_series.add_prefix("pedigree_").to_dict())
+            return ped_dict
+
+        except Exception:
+            logger.warning(f"pedigree parse error: {horse_id}\n{traceback.format_exc()}")
+            return {}
     
     def save_data(self, race_results_df: pd.DataFrame, 
                   future_races_df: pd.DataFrame,
