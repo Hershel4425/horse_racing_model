@@ -177,74 +177,82 @@ class NetKeibaScraper:
         except Exception as e:
             logger.error(f"Error reading existing data: {e}")
             return datetime.now().year - 1
-    
-    def collect_race_ids(self, start_year: int, end_year: int = None) -> List[str]:
-        """指定期間のレースIDを収集
-        
+
+    def collect_race_ids(
+        self,
+        start_year: int,
+        end_year: int | None = None
+        ) -> Tuple[List[str], List[str]]:
+        """指定期間のレースIDを収集し、過去と未来に分けて返す。
+
         Args:
             start_year: 開始年
             end_year: 終了年（Noneの場合は現在年）
-            
+
         Returns:
-            List[str]: レースIDのリスト
+            Tuple[past_ids, future_ids]
         """
         if end_year is None:
             end_year = datetime.now().year
-            
-        all_race_ids = []
+
+        today = datetime.now().date()
+        past_ids: set[str] = set()
+        future_ids: set[str] = set()
+
         current_date = datetime(start_year, 1, 1)
         end_date = datetime(end_year, 12, 31)
-        
-        # 未来のレースも含める（2週間先まで）
-        future_date = datetime.now() + timedelta(days=14)
-        if future_date > end_date:
-            end_date = future_date
-            
+
+        # ２週間先まで未来を覗く
+        future_limit = datetime.now() + timedelta(days=14)
+        if future_limit > end_date:
+            end_date = future_limit
+
         # 日付ごとにレースIDを収集
         while current_date <= end_date:
             date_str = current_date.strftime("%Y%m%d")
             url = RACE_LIST_URL.format(date=date_str)
-            
             logger.info(f"Collecting race IDs for {date_str}")
-            
+
             if self._safe_request(url):
                 try:
                     # タブが存在する場合の処理
                     # 複数の日付がタブで表示される場合があるため、各タブをチェック
-                    tab_elements = self.driver.find_elements(By.CSS_SELECTOR, "#date_list_sub li")
-                    
-                    if tab_elements:
+                    tab_elements = self.driver.find_elements(
+                        By.CSS_SELECTOR, "#date_list_sub li"
+                    )
+                    tabs = tab_elements if tab_elements else [None]
+
+                    for tab in tabs:
                         # タブがある場合は各タブをクリックして取得
-                        for tab in tab_elements:
-                            try:
-                                # タブをクリック
-                                tab_link = tab.find_element(By.TAG_NAME, "a")
-                                self.driver.execute_script("arguments[0].click();", tab_link)
-                                time.sleep(1)  # タブ切り替えの待機
-                                
-                                # レースIDを抽出
-                                ids = self._extract_race_ids_from_list_page()
-                                all_race_ids.extend(ids)
-                                
-                            except Exception as e:
-                                logger.warning(f"Error processing tab: {e}")
-                                continue
-                    else:
-                        # タブがない場合は直接抽出
-                        ids = self._extract_race_ids_from_list_page()
-                        all_race_ids.extend(ids)
-                        
+                        if tab:
+                            self.driver.execute_script(
+                                "arguments[0].click();", tab.find_element(By.TAG_NAME, "a")
+                            )
+                            time.sleep(1) # タブ切り替えの待機
+
+                            # レースIDを抽出
+                            ids = self._extract_race_ids_from_list_page()
+
+                        else:
+                            # タブがない場合は直接抽出
+                            ids = self._extract_race_ids_from_list_page()
+
+                    # ここで過去／未来に振り分け
+                    target_set = (
+                        past_ids if current_date.date() <= today else future_ids
+                    )
+                    target_set.update(ids)
+
                 except Exception as e:
-                    logger.error(f"Error collecting race IDs for {date_str}: {e}")
-                    
+                    logger.warning(f"Error collecting race IDs for {date_str}: {e}")
+
             current_date += timedelta(days=1)
-            
-        # 重複を除去
-        all_race_ids = list(dict.fromkeys(all_race_ids))
-        
-        logger.info(f"Total collected race IDs: {len(all_race_ids)}")
-        
-        return all_race_ids
+
+        logger.info(
+            f"Total collected race IDs → past: {len(past_ids)}, future: {len(future_ids)}"
+        )
+        return list(past_ids), list(future_ids)
+
     
     def _extract_race_ids_from_list_page(self) -> List[str]:
         """レース一覧ページからレースIDを抽出
@@ -306,11 +314,12 @@ class NetKeibaScraper:
             
         return race_ids
     
-    def identify_new_race_ids(self, all_race_ids: List[str]) -> Tuple[List[str], List[str]]:
+    def identify_new_race_ids(self, past_ids: List[str],future_ids: List[str]) -> Tuple[List[str], List[str]]:
         """新規レースIDを特定（過去・未来を分離）
         
         Args:
-            all_race_ids: 全レースIDリスト
+            past_ids: 過去レースIDリスト
+            future_ids: 未来レースIDリスト
             
         Returns:
             Tuple[List[str], List[str]]: (過去の新規レースID, 未来の新規レースID)
@@ -322,21 +331,10 @@ class NetKeibaScraper:
             existing_ids = set(df['race_id'].astype(str))
             
         # 新規IDを特定
-        new_ids = [id for id in all_race_ids if id not in existing_ids]
+        new_past = [rid for rid in past_ids if rid not in existing_ids]
+        new_future = [rid for rid in future_ids if rid not in existing_ids]
         
-        # 現在日時で過去・未来を分離
-        today = datetime.now().strftime("%Y%m%d")
-        past_ids = []
-        future_ids = []
-        
-        for race_id in new_ids:
-            race_date = race_id[:4] + race_id[6:10]  # 年月日を抽出
-            if race_date <= today:
-                past_ids.append(race_id)
-            else:
-                future_ids.append(race_id)
-                
-        return past_ids, future_ids
+        return new_past, new_future
     
 
     def scrape_race_results(self, race_ids: List[str]) -> pd.DataFrame:
@@ -493,178 +491,71 @@ class NetKeibaScraper:
         return results
 
     def _extract_shutuba_data(self, race_id: str) -> List[Dict]:
-        """出馬表ページからデータを抽出
-        
-        Args:
-            race_id: レースID
-            
-        Returns:
-            List[Dict]: 出馬表データのリスト
         """
-        shutuba_data = []
-        
-        try:
-            # pandas.read_html相当の処理
-            # HTMLをStringIOに変換してpandasで読み込む
-            page_source = self.driver.page_source
-            from io import StringIO
-            html_io = StringIO(page_source)
-            
-            try:
-                dfs = pd.read_html(html_io, flavor='lxml')
-                
-                if not dfs:
-                    logger.error(f"No tables found for race_id: {race_id}")
-                    return shutuba_data
-                
-                # 出馬表のデータフレームを取得
-                df = dfs[0]
-                
-                # カラム名の候補を定義（オッズ列の変動に対応）
-                possible_odds_columns = ['予想 オッズ', 'オッズ 更新', '予想オッズ', 'オッズ更新', 'オッズ']
-                odds_column = None
-                
-                # 実際に存在するオッズ列を探す
-                for col in possible_odds_columns:
-                    if col in df.columns:
-                        odds_column = col
-                        break
-                
-                # 必要なカラムを選択（オッズ列がない場合も対応）
-                required_columns = ["枠", "馬 番", "馬名", "性齢", "斤量", "騎手", "厩舎"]
-                if odds_column:
-                    required_columns.append(odds_column)
-                
-                # カラムが存在することを確認
-                available_columns = [col for col in required_columns if col in df.columns]
-                
-                if len(available_columns) < 7:  # 最低限必要なカラム数
-                    logger.warning(f"Not enough columns found. Available: {df.columns.tolist()}")
-                    # 別の方法で抽出を試みる
-                    return self._extract_shutuba_data_by_selenium(race_id)
-                
-                # データフレームから必要な列を抽出
-                race_df = df[available_columns].copy()
-                
-                # カラム名を統一
-                rename_dict = {
-                    "馬 番": "馬番",
-                    "予想 オッズ": "単勝オッズ",
-                    "オッズ 更新": "単勝オッズ",
-                    "予想オッズ": "単勝オッズ",
-                    "オッズ更新": "単勝オッズ",
-                    "オッズ": "単勝オッズ"
-                }
-                
-                race_df.rename(columns=rename_dict, inplace=True)
-                
-                # race_idを追加
-                race_df['race_id'] = race_id
-                
-                # Seleniumを使ってIDを取得
-                rows = self.driver.find_elements(By.CSS_SELECTOR, "tbody tr.HorseList")
-                
-                horse_ids = []
-                jockey_ids = []
-                trainer_ids = []
-                
-                for row in rows:
-                    # 馬ID
-                    try:
-                        horse_link = row.find_element(By.CSS_SELECTOR, "td.HorseInfo a")
-                        href = horse_link.get_attribute("href")
-                        horse_id_match = re.search(r"/horse/(\d+)", href)
-                        if horse_id_match:
-                            horse_ids.append(horse_id_match.group(1))
-                        else:
-                            horse_ids.append(None)
-                    except:
-                        horse_ids.append(None)
-                    
-                    # 騎手ID
-                    try:
-                        jockey_link = row.find_element(By.CSS_SELECTOR, "td.Jockey a")
-                        href = jockey_link.get_attribute("href")
-                        jockey_id_match = re.search(r"/jockey/result/recent/(\d+)/", href)
-                        if jockey_id_match:
-                            jockey_ids.append(jockey_id_match.group(1))
-                        else:
-                            jockey_ids.append(None)
-                    except:
-                        jockey_ids.append(None)
-                    
-                    # 調教師ID
-                    try:
-                        trainer_link = row.find_element(By.CSS_SELECTOR, "td.Trainer a")
-                        href = trainer_link.get_attribute("href")
-                        trainer_id_match = re.search(r"/trainer/result/recent/(\d+)/", href)
-                        if trainer_id_match:
-                            trainer_ids.append(trainer_id_match.group(1))
-                        else:
-                            trainer_ids.append(None)
-                    except:
-                        trainer_ids.append(None)
-                
-                # IDをデータフレームに追加
-                if len(horse_ids) == len(race_df):
-                    race_df['horse_id'] = horse_ids
-                    race_df['jockey_id'] = jockey_ids
-                    race_df['trainer_id'] = trainer_ids
-                
-                # DataFrameをDictのリストに変換
-                shutuba_data = race_df.to_dict('records')
-                
-            except Exception as e:
-                logger.error(f"Error with pandas.read_html: {e}")
-                # フォールバック: Seleniumで直接抽出
-                return self._extract_shutuba_data_by_selenium(race_id)
-            
-        except Exception as e:
-            logger.error(f"Error extracting shutuba data for {race_id}: {e}")
-        
-        return shutuba_data
+        出馬表（shutuba.html）からデータを抽出して返す。
+        _extract_race_result_data と同じく Selenium だけで処理し、
+        ヘッダー名の揺れに強い実装にしたわ。
+        """
+        shutuba_data: List[Dict] = []
 
-    def _extract_shutuba_data_by_selenium(self, race_id: str) -> List[Dict]:
-        """Seleniumを使用して出馬表データを直接抽出（フォールバック）
-        
-        Args:
-            race_id: レースID
-            
-        Returns:
-            List[Dict]: 出馬表データのリスト
-        """
-        shutuba_data = []
-        
         try:
+            # 各馬 1 行 = <tr class="HorseList">
             rows = self.driver.find_elements(By.CSS_SELECTOR, "tbody tr.HorseList")
-            
             for row in rows:
                 try:
+                    # --- 基本情報 --------------------------------------------------
                     data = {
-                        'race_id': race_id,
-                        '枠': self._safe_get_text(row, "td:nth-child(1)"),
-                        '馬番': self._safe_get_text(row, "td:nth-child(2)"),
-                        '馬名': self._safe_get_text(row, "td.HorseInfo"),
-                        '性齢': self._safe_get_text(row, "td:nth-child(4)"),
-                        '斤量': self._safe_get_text(row, "td:nth-child(5)"),
-                        '騎手': self._safe_get_text(row, "td.Jockey"),
-                        '厩舎': self._safe_get_text(row, "td.Trainer"),
-                        '単勝オッズ': self._safe_get_text(row, "td:nth-child(8)")  # オッズ列の位置は可変
+                        "race_id": race_id,
+                        "枠":  self._safe_get_text(row, "td.Waku"),                 # 枠
+                        "馬番": self._safe_get_text(row, "td.Umaban"),               # 馬番
+                        "馬名": self._safe_get_text(row, "td.HorseInfo span.HorseName"),
+                        "性齢": self._safe_get_text(row, "td.Barei"),               # 性齢(牡3など)
+                        # 斤量はクラス名が無いので Barei の次セル（=6列目）で取得
+                        "斤量": self._safe_get_text_by_index(row, "td", 5),
+                        "騎手": self._safe_get_text(row, "td.Jockey a"),
+                        "厩舎": self._safe_get_text(row, "td.Trainer a"),
+                        "馬体重(増減)": self._safe_get_text(row, "td.Weight"),
+                        # --- オッズ & 人気 ------------------------------------------
+                        # オッズ本体は td.Popular（Popular_Ninki ではない）
+                        "単勝オッズ": self._safe_get_text(row, "td.Popular span[id^='odds-'], td.Popular"),
+                        "人気": self._safe_get_text(row, "td.Popular_Ninki span, td.Popular_Ninki"),
                     }
-                    
-                    # IDを抽出（上記と同じロジック）
-                    # ... (省略)
-                    
+
+                    # --- 各 ID -----------------------------------------------------
+                    # 馬 ID
+                    horse_link = row.find_element(By.CSS_SELECTOR, "td.HorseInfo a")
+                    if horse_link:
+                        m = re.search(r"/horse/(\d+)", horse_link.get_attribute("href"))
+                        if m:
+                            data["horse_id"] = m.group(1)
+
+                    # 騎手 ID
+                    jockey_link = row.find_element(By.CSS_SELECTOR, "td.Jockey a")
+                    if jockey_link:
+                        m = re.search(r"/jockey/result/recent/(\d+)/", jockey_link.get_attribute("href"))
+                        if m:
+                            data["jockey_id"] = m.group(1)
+
+                    # 調教師 ID
+                    trainer_link = row.find_element(By.CSS_SELECTOR, "td.Trainer a")
+                    if trainer_link:
+                        m = re.search(r"/trainer/result/recent/(\d+)/", trainer_link.get_attribute("href"))
+                        if m:
+                            data["trainer_id"] = m.group(1)
+
                     shutuba_data.append(data)
-                    
-                except Exception as e:
-                    logger.warning(f"Error extracting row data: {e}")
+
+                except Exception as e_row:
+                    logger.warning(f"row parse error: {e_row}")
                     continue
-                    
+
+            logger.info(f"Extracted {len(shutuba_data)} shutuba rows for race_id={race_id}")
+
         except Exception as e:
-            logger.error(f"Error in selenium extraction: {e}")
-        
+            logger.error(f"extract shutuba error ({race_id}): {e}")
+
         return shutuba_data
+
 
     def _safe_get_text(self, element, selector: str, default: str = "") -> str:
         """要素から安全にテキストを取得
@@ -834,11 +725,11 @@ class NetKeibaScraper:
             
             # 2. レースID収集
             logger.info(f"Collecting race IDs from {last_year} to present...")
-            all_race_ids = self.collect_race_ids(last_year)
+            past_ids_all, future_ids_all = self.collect_race_ids(last_year)
             
             # 3. 新規ID特定
             logger.info("Identifying new race IDs...")
-            past_ids, future_ids = self.identify_new_race_ids(all_race_ids)
+            past_ids, future_ids = self.identify_new_race_ids(past_ids_all, future_ids_all)
             logger.info(f"Found {len(past_ids)} past races and {len(future_ids)} future races")
             
             # 4. 過去レースデータ収集
