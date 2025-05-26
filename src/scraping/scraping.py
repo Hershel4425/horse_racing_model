@@ -165,7 +165,7 @@ class NetKeibaScraper:
                 self._wait_interval()
                 return True
             except Exception as e:
-                logger.warning(f"Request failed (attempt {i+1}/{retry_count}): {e}")
+                logger.warning(f"Request failed at url:{url} (attempt {i+1}/{retry_count}): {e}")
                 if i < retry_count - 1:
                     time.sleep(5)
                     
@@ -219,7 +219,7 @@ class NetKeibaScraper:
 
         # ２週間先まで未来を覗く
         future_limit = datetime.now() + timedelta(days=14)
-        if future_limit > end_date:
+        if future_limit < end_date:
             end_date = future_limit
 
         # 日付ごとにレースIDを収集
@@ -374,11 +374,20 @@ class NetKeibaScraper:
         """
         all_results = []
         all_race_info = []
-        
-        for race_id in race_ids:
+        start_time = time.time()
+    
+        for i, race_id in enumerate(race_ids, 1):
             if not self.validator.validate_race_id(race_id):
                 logger.warning(f"Invalid race ID: {race_id}")
                 continue
+
+            # 進捗表示
+            elapsed_time = time.time() - start_time
+            if i > 1:
+                avg_time_per_race = elapsed_time / (i - 1)
+                remaining_races = len(race_ids) - i + 1
+                estimated_remaining_time = avg_time_per_race * remaining_races
+                logger.info(f"Race results: {i}/{len(race_ids)} ({i/len(race_ids)*100:.1f}%) - ETA: {estimated_remaining_time/60:.1f}min")
             
             url = RACE_RESULT_URL.format(race_id=race_id)
             
@@ -410,11 +419,20 @@ class NetKeibaScraper:
         """
         all_shutuba_data = []
         all_race_info = []
+        start_time = time.time()
         
-        for race_id in race_ids:
+        for i, race_id in enumerate(race_ids, 1):
             if not self.validator.validate_race_id(race_id):
                 logger.warning(f"Invalid race ID: {race_id}")
                 continue
+            
+            # 進捗表示
+            elapsed_time = time.time() - start_time
+            if i > 1:
+                avg_time_per_race = elapsed_time / (i - 1)
+                remaining_races = len(race_ids) - i + 1
+                estimated_remaining_time = avg_time_per_race * remaining_races
+                logger.info(f"Future races: {i}/{len(race_ids)} ({i/len(race_ids)*100:.1f}%) - ETA: {estimated_remaining_time/60:.1f}min")
             
             url = RACE_SHUTUBA_URL.format(race_id=race_id)
             
@@ -578,7 +596,7 @@ class NetKeibaScraper:
                     shutuba_data.append(data)
 
                 except Exception as e_row:
-                    logger.warning(f"row parse error: {e_row}")
+                    logger.warning(f"race_id={race_id} row parse error: {e_row}")
                     continue
 
             logger.info(f"Extracted {len(shutuba_data)} shutuba rows for race_id={race_id}")
@@ -733,15 +751,15 @@ class NetKeibaScraper:
     
     
     def extract_horse_ids(self, race_results_df: pd.DataFrame, 
-                        shutuba_df: pd.DataFrame) -> List[str]:
-        """レースデータから馬IDを抽出
+                        shutuba_df: pd.DataFrame) -> Tuple[List[str], List[str]]:
+        """レースデータから馬IDを抽出し、新規IDと血統未取得IDを分離
         
         Args:
             race_results_df: レース結果データフレーム
             shutuba_df: 出馬表データフレーム
             
         Returns:
-            List[str]: 馬IDのリスト
+            Tuple[List[str], List[str]]: (過去成績未取得の馬ID, 血統未取得の馬ID)
         """
         horse_ids = set()
         
@@ -753,16 +771,36 @@ class NetKeibaScraper:
         if 'horse_id' in shutuba_df.columns:
             horse_ids.update(shutuba_df['horse_id'].astype(str).unique())
             
-        # 有効なIDのみを返す
+        # 有効なIDのみをフィルタ
         valid_ids = [id for id in horse_ids if self.validator.validate_horse_id(id)]
         
-        return valid_ids
+        # # 既存の過去成績データをチェック
+        # existing_past_ids = set()
+        # if os.path.exists(HORSE_PAST_DF_PATH):
+        #     past_df = pd.read_csv(HORSE_PAST_DF_PATH)
+        #     if 'horse_id' in past_df.columns:
+        #         existing_past_ids = set(past_df['horse_id'].astype(str).unique())
+        
+        # 既存の血統データをチェック
+        existing_pedigree_ids = set()
+        if os.path.exists(HORSE_PEDIGREE_DF_PATH):
+            pedigree_df = pd.read_csv(HORSE_PEDIGREE_DF_PATH)
+            if 'horse_id' in pedigree_df.columns:
+                existing_pedigree_ids = set(pedigree_df['horse_id'].astype(str).unique())
+        
+        # 新規IDを特定
+        # new_past_ids = [id for id in valid_ids if id not in existing_past_ids]
+        new_past_ids = [id for id in valid_ids]
+        new_pedigree_ids = [id for id in valid_ids if id not in existing_pedigree_ids]
+        
+        return new_past_ids, new_pedigree_ids
     
-    def scrape_horse_data(self, horse_ids: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def scrape_horse_data(self, past_horse_ids: List[str], pedigree_horse_ids: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """馬の過去成績と血統情報をスクレイピング
         
         Args:
-            horse_ids: 馬IDリスト
+            past_horse_ids: 過去成績を取得する馬IDリスト
+            pedigree_horse_ids: 血統情報を取得する馬IDリスト
             
         Returns:
             Tuple[pd.DataFrame, pd.DataFrame]: (過去成績DF, 血統情報DF)
@@ -770,24 +808,55 @@ class NetKeibaScraper:
         past_performance = []
         pedigree_data = []
         
-        for horse_id in horse_ids:
-            if not self.validator.validate_horse_id(horse_id):
-                logger.warning(f"Invalid horse ID: {horse_id}")
-                continue
+        # 過去成績のスクレイピング
+        if past_horse_ids:
+            logger.info(f"Scraping past performance for {len(past_horse_ids)} horses...")
+            start_time = time.time()
+            
+            for i, horse_id in enumerate(past_horse_ids, 1):
+                if not self.validator.validate_horse_id(horse_id):
+                    logger.warning(f"Invalid horse ID: {horse_id}")
+                    continue
                 
-            # 過去成績を取得
-            past_url = HORSE_DB_URL.format(horse_id=horse_id)
-            if self._safe_request(past_url):
-                past_data = self._extract_horse_past_data(horse_id)
-                if past_data:
-                    past_performance.extend(past_data)
-                    
-            # 血統情報を取得
-            pedigree_url = HORSE_PEDIGREE_URL.format(horse_id=horse_id)
-            if self._safe_request(pedigree_url):
-                ped_data = self._extract_horse_pedigree_data(horse_id)
-                if ped_data:
-                    pedigree_data.append(ped_data)
+                # 進捗表示
+                elapsed_time = time.time() - start_time
+                if i > 1:
+                    avg_time_per_horse = elapsed_time / (i - 1)
+                    remaining_horses = len(past_horse_ids) - i + 1
+                    estimated_remaining_time = avg_time_per_horse * remaining_horses
+                    logger.info(f"Horse past performance: {i}/{len(past_horse_ids)} ({i/len(past_horse_ids)*100:.1f}%) - ETA: {estimated_remaining_time/60:.1f}min")
+                
+                # 過去成績を取得
+                past_url = HORSE_DB_URL.format(horse_id=horse_id)
+                if self._safe_request(past_url):
+                    past_data = self._extract_horse_past_data(horse_id)
+                    if past_data:
+                        past_performance.extend(past_data)
+        
+        # 血統情報のスクレイピング
+        if pedigree_horse_ids:
+            logger.info(f"Scraping pedigree for {len(pedigree_horse_ids)} horses...")
+            start_time = time.time()
+            
+            for i, horse_id in enumerate(pedigree_horse_ids, 1):
+                if not self.validator.validate_horse_id(horse_id):
+                    logger.warning(f"Invalid horse ID: {horse_id}")
+                    continue
+                
+                # 進捗表示
+                elapsed_time = time.time() - start_time
+                if i > 1:
+                    avg_time_per_horse = elapsed_time / (i - 1)
+                    remaining_horses = len(pedigree_horse_ids) - i + 1
+                    estimated_remaining_time = avg_time_per_horse * remaining_horses
+                    logger.info(f"Horse pedigree: {i}/{len(pedigree_horse_ids)} ({i/len(pedigree_horse_ids)*100:.1f}%) - ETA: {estimated_remaining_time/60:.1f}min")
+                
+                # 血統情報を取得
+                pedigree_url = HORSE_PEDIGREE_URL.format(horse_id=horse_id)
+                if self._safe_request(pedigree_url):
+                    ped_data = self._extract_horse_pedigree_data(horse_id)
+                    if ped_data:
+                        pedigree_data.append(ped_data)
                     
         return pd.DataFrame(past_performance), pd.DataFrame(pedigree_data)
     
@@ -822,36 +891,36 @@ class NetKeibaScraper:
                     if len(cells) < 20:  # 必要な列数がない場合はスキップ
                         continue
                     
-                    # レースIDを取得
-                    race_link = cells[4].find_element(By.TAG_NAME, "a")
-                    race_href = race_link.get_attribute("href")
-                    race_id_match = re.search(r'/race/(\d+)/', race_href)
-                    race_id = race_id_match.group(1) if race_id_match else ""
+                    # # レースIDを取得
+                    # race_link = cells[4].find_element(By.TAG_NAME, "a")
+                    # race_href = race_link.get_attribute("href")
+                    # race_id_match = re.search(r'/race/(\d+)/', race_href)
+                    # race_id = race_id_match.group(1) if race_id_match else ""
                     
                     result_data = {
                         'horse_id': horse_id,
-                        'race_id': race_id,
+                        # 'race_id': race_id,
                         '日付': cells[0].text.strip(),
                         '開催': cells[1].text.strip(),
-                        '天気': cells[2].text.strip(),
+                        # '天気': cells[2].text.strip(),
                         'R': cells[3].text.strip(),
                         'レース名': cells[4].text.strip(),
-                        '頭数': cells[6].text.strip(),
-                        '枠番': cells[7].text.strip(),
-                        '馬番': cells[8].text.strip(),
-                        'オッズ': cells[9].text.strip(),
-                        '人気': cells[10].text.strip(),
-                        '着順': cells[11].text.strip(),
-                        '騎手': cells[12].text.strip(),
-                        '斤量': cells[13].text.strip(),
-                        '距離': cells[14].text.strip(),
-                        '馬場': cells[15].text.strip(),
-                        'タイム': cells[17].text.strip(),
-                        '着差': cells[18].text.strip(),
-                        '通過': cells[20].text.strip(),
+                        # '頭数': cells[6].text.strip(),
+                        # '枠番': cells[7].text.strip(),
+                        # '馬番': cells[8].text.strip(),
+                        # 'オッズ': cells[9].text.strip(),
+                        # '人気': cells[10].text.strip(),
+                        # '着順': cells[11].text.strip(),
+                        # '騎手': cells[12].text.strip(),
+                        # '斤量': cells[13].text.strip(),
+                        # '距離': cells[14].text.strip(),
+                        # '馬場': cells[15].text.strip(),
+                        # 'タイム': cells[17].text.strip(),
+                        # '着差': cells[18].text.strip(),
+                        # '通過': cells[20].text.strip(),
                         'ペース': cells[21].text.strip(),
-                        '上り': cells[22].text.strip(),
-                        '馬体重': cells[23].text.strip(),
+                        # '上り': cells[22].text.strip(),
+                        # '馬体重': cells[23].text.strip(),
                         '賞金': cells[27].text.strip() if len(cells) > 27 else ""
                     }
                     
@@ -1009,15 +1078,15 @@ class NetKeibaScraper:
             
             # 6. 馬ID抽出
             logger.info("Extracting horse IDs...")
-            horse_ids = self.extract_horse_ids(race_results_df, future_races_df)
-            logger.info(f"Found {len(horse_ids)} unique horses")
+            past_horse_ids, pedigree_horse_ids = self.extract_horse_ids(race_results_df, future_races_df)
+            logger.info(f"Found {len(past_horse_ids)} horses for past performance and {len(pedigree_horse_ids)} horses for pedigree data")
             
             # 7. 馬データ収集
             horse_past_df = pd.DataFrame()
             horse_pedigree_df = pd.DataFrame()
-            if horse_ids:
+            if past_horse_ids or pedigree_horse_ids:
                 logger.info("Scraping horse data...")
-                horse_past_df, horse_pedigree_df = self.scrape_horse_data(horse_ids)
+                horse_past_df, horse_pedigree_df = self.scrape_horse_data(past_horse_ids, pedigree_horse_ids)
             else:
                 logger.info("No horse data to scrape")
             
