@@ -1,3 +1,4 @@
+import datetime as dt
 import pandas as pd
 import numpy as np
 from selenium import webdriver
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 # 定数定義
 # 全体のルートパス
 ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3/data"
-DATE_STRING = datetime.date.today().strftime("%Y%m%d")
+DATE_STRING = dt.date.today().strftime("%Y%m%d")
 # ファイルパス
 RACE_RESULT_DF_PATH = ROOT_PATH + "/00_raw/11_race_result/race_result_df.csv"
 RACE_INFO_DF_PATH = ROOT_PATH + "/00_raw/10_race_info/race_info_df.csv"
