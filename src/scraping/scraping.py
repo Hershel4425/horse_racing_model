@@ -18,10 +18,23 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 定数定義
-RACE_RESULT_DF_PATH = "race_results.csv"
-FUTURE_RACE_DF_PATH = "future_races.csv"
-HORSE_PAST_DF_PATH = "horse_past_performance.csv"
-HORSE_PEDIGREE_DF_PATH = "horse_pedigree.csv"
+# 全体のルートパス
+ROOT_PATH = "/Users/okamuratakeshi/Documents/100_プログラム_趣味/150_野望/153_競馬_v3/data"
+DATE_STRING = datetime.date.today().strftime("%Y%m%d")
+# ファイルパス
+RACE_RESULT_DF_PATH = ROOT_PATH + "/00_raw/11_race_result/race_result_df.csv"
+RACE_INFO_DF_PATH = ROOT_PATH + "/00_raw/10_race_info/race_info_df.csv"
+# 未来のデータ
+RACE_FORECAST_DF_PATH = (
+    ROOT_PATH
+    + f"/00_raw/12_future_data/race_forecast/{DATE_STRING}_race_forecast_df.csv"
+)
+FUTURE_RACE_INFO_DF_PATH = (
+    ROOT_PATH
+    + f"/00_raw/12_future_data/future_race_info/{DATE_STRING}_future_race_info_df.csv"
+)
+HORSE_PAST_DF_PATH = ROOT_PATH + "/00_raw/20_horse_past_performance/horse_past_performance_df.csv"
+HORSE_PEDIGREE_DF_PATH = ROOT_PATH + "00_raw/40_pedigree/pedigree_df.csv"
 
 # URLテンプレート
 RACE_LIST_URL = "https://race.netkeiba.com/top/race_list.html?kaisai_date={date}"
@@ -161,10 +174,10 @@ class NetKeibaScraper:
         """既存データから最新の取得済み年を確認
         
         Returns:
-            int: 最新の取得済み年（データがない場合は前年）
+            int: 最新の取得済み年（データがない場合は今年）
         """
         if not os.path.exists(RACE_RESULT_DF_PATH):
-            return datetime.now().year - 1
+            return datetime.now().year
             
         try:
             df = pd.read_csv(RACE_RESULT_DF_PATH)
@@ -925,7 +938,6 @@ class NetKeibaScraper:
             race_results_df.to_csv(RACE_RESULT_DF_PATH, index=False)
         
         # レース情報を保存
-        RACE_INFO_DF_PATH = "race_info.csv"
         if not race_info_df.empty:
             if os.path.exists(RACE_INFO_DF_PATH):
                 existing_df = pd.read_csv(RACE_INFO_DF_PATH)
@@ -935,10 +947,9 @@ class NetKeibaScraper:
         
         # 未来レースを保存（上書き）
         if not future_races_df.empty:
-            future_races_df.to_csv(FUTURE_RACE_DF_PATH, index=False)
+            future_races_df.to_csv(RACE_FORECAST_DF_PATH, index=False)
         
         # 未来レース情報を保存（上書き）
-        FUTURE_RACE_INFO_DF_PATH = "future_race_info.csv"
         if not future_race_info_df.empty:
             future_race_info_df.to_csv(FUTURE_RACE_INFO_DF_PATH, index=False)
         
@@ -1028,8 +1039,8 @@ def main():
     """メイン関数"""
     # カスタム設定を作成
     config = NetKeibaScraperConfig(
-        min_interval=1.5,  # 最小1.5秒待機
-        max_interval=3.0,  # 最大3秒待機
+        min_interval=3.5,  # 最小3.5秒待機
+        max_interval=10.0,  # 最大10秒待機
         retry_count=3,     # 3回リトライ
         timeout=30         # 30秒でタイムアウト
     )
