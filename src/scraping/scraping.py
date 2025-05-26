@@ -13,6 +13,8 @@ from typing import List, Dict, Tuple, Optional
 import logging
 from io import StringIO
 import traceback
+import jpholiday # ← これを追加するのを忘れないでね！
+
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -211,6 +213,16 @@ class NetKeibaScraper:
 
         # 日付ごとにレースIDを収集
         while current_date <= end_date:
+            # current_date の曜日を取得 (0:月曜日, 5:土曜日, 6:日曜日)
+            weekday = current_date.weekday()
+            # current_date が土日または祝日かチェック
+            is_race_day = (weekday >= 5) or jpholiday.is_holiday(current_date.date())
+
+            # 土日祝じゃなかったら、次の日に進む
+            if not is_race_day:
+                logger.debug(f"Skipping {current_date.strftime('%Y%m%d')} (Weekday/Not Holiday)")
+                current_date += timedelta(days=1)
+                continue # ループの先頭に戻る
             date_str = current_date.strftime("%Y%m%d")
             url = RACE_LIST_URL.format(date=date_str)
             logger.info(f"Collecting race IDs for {date_str}")
@@ -339,16 +351,17 @@ class NetKeibaScraper:
         return new_past, new_future
     
 
-    def scrape_race_results(self, race_ids: List[str]) -> pd.DataFrame:
+    def scrape_race_results(self, race_ids: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """過去レース結果をスクレイピング
         
         Args:
             race_ids: レースIDリスト
             
         Returns:
-            pd.DataFrame: レース結果データフレーム
+            Tuple[pd.DataFrame, pd.DataFrame]: (レース結果データフレーム, レース情報データフレーム)
         """
         all_results = []
+        all_race_info = []
         
         for race_id in race_ids:
             if not self.validator.validate_race_id(race_id):
@@ -360,28 +373,31 @@ class NetKeibaScraper:
             if self._safe_request(url):
                 # レース結果を取得
                 race_data = self._extract_race_result_data(race_id)
+                all_results.extend(race_data)
                 
                 # レース情報を取得
                 race_info = self._extract_race_info(race_id)
-                
-                # レース情報を各結果に追加
-                for data in race_data:
-                    data.update(race_info)
-                
-                all_results.extend(race_data)
+                race_info['race_id'] = race_id  # race_idを追加
+                all_race_info.append(race_info)
         
-        return pd.DataFrame(all_results)
+        # 空のデータフレームを返す場合の処理
+        if not all_results:
+            logger.info("No race results found")
+            return pd.DataFrame(), pd.DataFrame()
+    
+        return pd.DataFrame(all_results), pd.DataFrame(all_race_info)
 
-    def scrape_future_races(self, race_ids: List[str]) -> pd.DataFrame:
+    def scrape_future_races(self, race_ids: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """未来レース（出馬表）をスクレイピング
         
         Args:
             race_ids: レースIDリスト
             
         Returns:
-            pd.DataFrame: 出馬表データフレーム
+            Tuple[pd.DataFrame, pd.DataFrame]: (出馬表データフレーム, レース情報データフレーム)
         """
         all_shutuba_data = []
+        all_race_info = []
         
         for race_id in race_ids:
             if not self.validator.validate_race_id(race_id):
@@ -393,17 +409,19 @@ class NetKeibaScraper:
             if self._safe_request(url):
                 # 出馬表データを取得
                 shutuba_data = self._extract_shutuba_data(race_id)
+                all_shutuba_data.extend(shutuba_data)
                 
                 # レース情報を取得
                 race_info = self._extract_race_info(race_id)
-                
-                # レース情報を各データに追加
-                for data in shutuba_data:
-                    data.update(race_info)
-                
-                all_shutuba_data.extend(shutuba_data)
+                race_info['race_id'] = race_id  # race_idを追加
+                all_race_info.append(race_info)
         
-        return pd.DataFrame(all_shutuba_data)
+        # 空のデータフレームを返す場合の処理
+        if not all_shutuba_data:
+            logger.info("No future races found")
+            return pd.DataFrame(), pd.DataFrame()
+        
+        return pd.DataFrame(all_shutuba_data), pd.DataFrame(all_race_info)
     
     
     def _extract_race_result_data(self, race_id: str) -> List[Dict]:
@@ -557,6 +575,111 @@ class NetKeibaScraper:
             logger.error(f"extract shutuba error ({race_id}): {e}")
 
         return shutuba_data
+    
+
+    def _extract_race_info(self, race_id: str) -> Dict:
+        """レース情報を抽出
+        
+        Args:
+            race_id: レースID
+            
+        Returns:
+            Dict: レース情報
+        """
+        race_info = {
+            "race_id": race_id,
+            "ラウンド": None,
+            "レース名": None,
+            "日付": None,
+            "発走時刻": None,
+            "距離条件": None,
+            "天気": None,
+            "馬場": None,
+            "競馬場": None,
+            "回数": None,
+            "日数": None,
+            "条件": None,
+            "グレード": None,
+            "重賞": None,
+            "分類": None,
+            "特殊条件": None,
+            "立て数": None,
+            "賞金": None,
+        }
+        
+        try:
+            # レース名ボックスを取得
+            race_name_box = self.driver.find_element(By.CLASS_NAME, "RaceList_NameBox")
+            
+            # レース名
+            try:
+                race_name = race_name_box.find_element(By.CLASS_NAME, "RaceName")
+                race_info["レース名"] = race_name.text.strip()
+            except:
+                pass
+            
+            # グレード（重賞）
+            for i in range(1, 4):
+                try:
+                    grade = race_name_box.find_element(By.CLASS_NAME, f"Icon_GradeType{i}")
+                    if grade:
+                        race_info["重賞"] = f"G{i}"
+                        break
+                except:
+                    continue
+            
+            # ラウンド
+            try:
+                round_elem = race_name_box.find_element(By.CLASS_NAME, "RaceNum")
+                race_info["ラウンド"] = round_elem.text.strip()
+            except:
+                pass
+            
+            # 日付
+            try:
+                date_elem = self.driver.find_element(By.CSS_SELECTOR, "dd.Active a")
+                race_info["日付"] = date_elem.get_attribute("title")
+            except:
+                pass
+            
+            # RaceData01の情報
+            try:
+                race_data_01 = race_name_box.find_element(By.CLASS_NAME, "RaceData01")
+                data_list = race_data_01.text.split("/")
+                
+                if len(data_list) >= 4:
+                    race_info["発走時刻"] = data_list[0].strip()
+                    race_info["距離条件"] = data_list[1].strip()
+                    race_info["天気"] = data_list[2].strip().replace("天候:", "")
+                    race_info["馬場"] = data_list[3].strip()
+                elif len(data_list) == 2:
+                    race_info["発走時刻"] = data_list[0].strip()
+                    race_info["距離条件"] = data_list[1].strip()
+            except:
+                pass
+            
+            # RaceData02の情報
+            try:
+                race_data_02 = race_name_box.find_element(By.CLASS_NAME, "RaceData02")
+                spans = race_data_02.find_elements(By.TAG_NAME, "span")
+                
+                if len(spans) >= 9:
+                    race_info["回数"] = spans[0].text.strip()
+                    race_info["競馬場"] = spans[1].text.strip()
+                    race_info["日数"] = spans[2].text.strip()
+                    race_info["条件"] = spans[3].text.strip()
+                    race_info["グレード"] = spans[4].text.strip()
+                    race_info["分類"] = spans[5].text.strip()
+                    race_info["特殊条件"] = spans[6].text.strip()
+                    race_info["立て数"] = spans[7].text.strip()
+                    race_info["賞金"] = spans[8].text.strip()
+            except:
+                pass
+            
+        except Exception as e:
+            logger.error(f"Error extracting race info: {e}")
+        
+        return race_info
 
 
     def _safe_get_text(self, element, selector: str, default: str = "") -> str:
@@ -656,123 +779,188 @@ class NetKeibaScraper:
                     
         return pd.DataFrame(past_performance), pd.DataFrame(pedigree_data)
     
-    def _extract_horse_past_data(self, horse_id: str) -> list[dict]:
+    def _extract_horse_past_data(self, horse_id: str) -> List[Dict]:
         """
-        netkeiba 馬DBページから過去レース結果をリスト形式で抽出する
-
-        Returns
-        -------
-        list[dict]
-            1 レース＝1 dict（horse_id, 日付, 開催, R, レース名, ペース, 賞金）
+        馬の過去成績をスクレイピング（HTMLベースに最適化）
+        
+        Args:
+            horse_id: 馬ID
+            
+        Returns:
+            List[Dict]: 過去成績データのリスト
         """
-        results: list[dict] = []
+        results = []
+        
         try:
-            # _safe_request() が driver.get() している前提
-            page_source = self.driver.page_source
-            tbls = pd.read_html(StringIO(page_source), flavor="lxml")
-
-            # race 結果テーブルは 3 番目（index=3）だが、
-            # 出走経験のない馬は「受賞歴」テーブルが先頭に来るのでずれることがある。
-            df = tbls[3] if len(tbls) > 3 else None
-            if df is not None and df.columns[0] == "受賞歴":
-                # 受賞歴テーブルをスキップ
-                df = tbls[4] if len(tbls) > 4 else None
-
-            if df is None or "日付" not in df.columns:
-                # 成績テーブルが存在しない＝未出走
+            # 全着順テーブルを探す
+            table = self.driver.find_element(By.CSS_SELECTOR, "table.db_h_race_results")
+            
+            if not table:
+                logger.info(f"No race results found for horse {horse_id}")
                 return results
-
-            # 欲しい列だけに絞り、馬 ID を付けて dict 化
-            df = df[["日付", "開催", "R", "レース名", "ペース", "賞金"]]
-            for _, row in df.iterrows():
-                results.append(
-                    {
-                        "horse_id": horse_id,
-                        "日付": row["日付"],
-                        "開催": row["開催"],
-                        "R": row["R"],
-                        "レース名": row["レース名"],
-                        "ペース": row["ペース"],
-                        "賞金": row["賞金"],
+            
+            # 各行からデータを抽出
+            rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+            
+            for row in rows:
+                try:
+                    # 各セルのデータを取得
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    
+                    if len(cells) < 20:  # 必要な列数がない場合はスキップ
+                        continue
+                    
+                    # レースIDを取得
+                    race_link = cells[4].find_element(By.TAG_NAME, "a")
+                    race_href = race_link.get_attribute("href")
+                    race_id_match = re.search(r'/race/(\d+)/', race_href)
+                    race_id = race_id_match.group(1) if race_id_match else ""
+                    
+                    result_data = {
+                        'horse_id': horse_id,
+                        'race_id': race_id,
+                        '日付': cells[0].text.strip(),
+                        '開催': cells[1].text.strip(),
+                        '天気': cells[2].text.strip(),
+                        'R': cells[3].text.strip(),
+                        'レース名': cells[4].text.strip(),
+                        '頭数': cells[6].text.strip(),
+                        '枠番': cells[7].text.strip(),
+                        '馬番': cells[8].text.strip(),
+                        'オッズ': cells[9].text.strip(),
+                        '人気': cells[10].text.strip(),
+                        '着順': cells[11].text.strip(),
+                        '騎手': cells[12].text.strip(),
+                        '斤量': cells[13].text.strip(),
+                        '距離': cells[14].text.strip(),
+                        '馬場': cells[15].text.strip(),
+                        'タイム': cells[17].text.strip(),
+                        '着差': cells[18].text.strip(),
+                        '通過': cells[20].text.strip(),
+                        'ペース': cells[21].text.strip(),
+                        '上り': cells[22].text.strip(),
+                        '馬体重': cells[23].text.strip(),
+                        '賞金': cells[27].text.strip() if len(cells) > 27 else ""
                     }
-                )
-        except Exception:
-            logger.warning(f"past data parse error: {horse_id}\n{traceback.format_exc()}")
+                    
+                    results.append(result_data)
+                    
+                except Exception as e:
+                    logger.debug(f"Error extracting row data: {e}")
+                    continue
+            
+            logger.info(f"Extracted {len(results)} race results for horse {horse_id}")
+            
+        except Exception as e:
+            logger.error(f"Error extracting horse past data for {horse_id}: {e}")
+        
         return results
 
-    # ──────────────────────────
-    # ■ 血統 ───────────────────
-    # ──────────────────────────
-    def _extract_horse_pedigree_data(self, horse_id: str) -> dict:
+    def _extract_horse_pedigree_data(self, horse_id: str) -> Dict:
         """
-        netkeiba 馬DB「/ped/」ページの 5 代血統テーブルを 1 行 62 列に展開して返す
-
-        Returns
-        -------
-        dict
-            {"horse_id": 0000..., "pedigree_0": "父", … "pedigree_61": "5×5 末尾"}
+        馬の血統情報をスクレイピング（HTMLベースに最適化）
+        
+        Args:
+            horse_id: 馬ID
+            
+        Returns:
+            Dict: 血統情報
         """
+        pedigree_data = {'horse_id': horse_id}
+        
         try:
-            page_source = self.driver.page_source
-            tbls = pd.read_html(StringIO(page_source), flavor="lxml")
-            df = tbls[0]                              # 5 代血統表は常に 0 番目 :contentReference[oaicite:0]{index=0}
-
-            # 行・列を「世代」順に再構成（現行関数と同じ）
-            generations = {}
-            for col in reversed(range(5)):  # 4 → 0
-                generations[col] = df[col]
-                df = df.drop(columns=[col]).drop_duplicates()
-
-            ped_series = (
-                pd.concat([generations[i] for i in range(5)])
-                .reset_index(drop=True)
-                .rename(horse_id)
-            )
-
-            ped_dict = {"horse_id": horse_id}
-            ped_dict.update(ped_series.add_prefix("pedigree_").to_dict())
-            return ped_dict
-
-        except Exception:
-            logger.warning(f"pedigree parse error: {horse_id}\n{traceback.format_exc()}")
-            return {}
+            # 血統表を取得
+            blood_table = self.driver.find_element(By.CSS_SELECTOR, "table.blood_table")
+            
+            if not blood_table:
+                logger.warning(f"No pedigree table found for horse {horse_id}")
+                return pedigree_data
+            
+            # 全てのセルを取得
+            cells = blood_table.find_elements(By.CSS_SELECTOR, "td")
+            
+            # セルから血統情報を抽出（インデックスベース）
+            pedigree_names = []
+            for cell in cells:
+                # リンクがある場合は馬名を取得
+                links = cell.find_elements(By.TAG_NAME, "a")
+                if links:
+                    # 最初のリンクのテキストを取得（馬名）
+                    horse_name = links[0].text.strip()
+                    # 英名や補足情報を除去
+                    horse_name = horse_name.split('\n')[0].split('(')[0].strip()
+                    if horse_name:
+                        pedigree_names.append(horse_name)
+            
+            # 血統データを辞書に格納
+            for i, name in enumerate(pedigree_names):
+                pedigree_data[f'pedigree_{i}'] = name
+            
+            logger.info(f"Extracted {len(pedigree_names)} pedigree entries for horse {horse_id}")
+            
+        except Exception as e:
+            logger.error(f"Error extracting pedigree data for {horse_id}: {e}")
+        
+        return pedigree_data
     
     def save_data(self, race_results_df: pd.DataFrame, 
-                  future_races_df: pd.DataFrame,
-                  horse_past_df: pd.DataFrame, 
-                  horse_pedigree_df: pd.DataFrame):
+                race_info_df: pd.DataFrame,
+                future_races_df: pd.DataFrame,
+                future_race_info_df: pd.DataFrame,
+                horse_past_df: pd.DataFrame, 
+                horse_pedigree_df: pd.DataFrame):
         """データを保存（既存データとマージ）
         
         Args:
             race_results_df: レース結果データフレーム
+            race_info_df: レース情報データフレーム
             future_races_df: 未来レースデータフレーム
+            future_race_info_df: 未来レース情報データフレーム
             horse_past_df: 馬の過去成績データフレーム
             horse_pedigree_df: 馬の血統情報データフレーム
         """
         # レース結果を保存
-        if os.path.exists(RACE_RESULT_DF_PATH):
-            existing_df = pd.read_csv(RACE_RESULT_DF_PATH)
-            race_results_df = pd.concat([existing_df, race_results_df], ignore_index=True)
-            race_results_df.drop_duplicates(subset=['race_id', 'horse_id'], inplace=True)
-        race_results_df.to_csv(RACE_RESULT_DF_PATH, index=False)
+        if not race_results_df.empty:
+            if os.path.exists(RACE_RESULT_DF_PATH):
+                existing_df = pd.read_csv(RACE_RESULT_DF_PATH)
+                race_results_df = pd.concat([existing_df, race_results_df], ignore_index=True)
+                race_results_df.drop_duplicates(subset=['race_id', 'horse_id'], inplace=True)
+            race_results_df.to_csv(RACE_RESULT_DF_PATH, index=False)
+        
+        # レース情報を保存
+        RACE_INFO_DF_PATH = "race_info.csv"
+        if not race_info_df.empty:
+            if os.path.exists(RACE_INFO_DF_PATH):
+                existing_df = pd.read_csv(RACE_INFO_DF_PATH)
+                race_info_df = pd.concat([existing_df, race_info_df], ignore_index=True)
+                race_info_df.drop_duplicates(subset=['race_id'], inplace=True)
+            race_info_df.to_csv(RACE_INFO_DF_PATH, index=False)
         
         # 未来レースを保存（上書き）
-        future_races_df.to_csv(FUTURE_RACE_DF_PATH, index=False)
+        if not future_races_df.empty:
+            future_races_df.to_csv(FUTURE_RACE_DF_PATH, index=False)
+        
+        # 未来レース情報を保存（上書き）
+        FUTURE_RACE_INFO_DF_PATH = "future_race_info.csv"
+        if not future_race_info_df.empty:
+            future_race_info_df.to_csv(FUTURE_RACE_INFO_DF_PATH, index=False)
         
         # 馬の過去成績を保存
-        if os.path.exists(HORSE_PAST_DF_PATH):
-            existing_df = pd.read_csv(HORSE_PAST_DF_PATH)
-            horse_past_df = pd.concat([existing_df, horse_past_df], ignore_index=True)
-            horse_past_df.drop_duplicates(subset=['horse_id', 'race_id'], inplace=True)
-        horse_past_df.to_csv(HORSE_PAST_DF_PATH, index=False)
+        if not horse_past_df.empty:
+            if os.path.exists(HORSE_PAST_DF_PATH):
+                existing_df = pd.read_csv(HORSE_PAST_DF_PATH)
+                horse_past_df = pd.concat([existing_df, horse_past_df], ignore_index=True)
+                horse_past_df.drop_duplicates(subset=['horse_id', 'race_id'], inplace=True)
+            horse_past_df.to_csv(HORSE_PAST_DF_PATH, index=False)
         
         # 血統情報を保存
-        if os.path.exists(HORSE_PEDIGREE_DF_PATH):
-            existing_df = pd.read_csv(HORSE_PEDIGREE_DF_PATH)
-            horse_pedigree_df = pd.concat([existing_df, horse_pedigree_df], ignore_index=True)
-            horse_pedigree_df.drop_duplicates(subset=['horse_id'], inplace=True)
-        horse_pedigree_df.to_csv(HORSE_PEDIGREE_DF_PATH, index=False)
-    
+        if not horse_pedigree_df.empty:
+            if os.path.exists(HORSE_PEDIGREE_DF_PATH):
+                existing_df = pd.read_csv(HORSE_PEDIGREE_DF_PATH)
+                horse_pedigree_df = pd.concat([existing_df, horse_pedigree_df], ignore_index=True)
+                horse_pedigree_df.drop_duplicates(subset=['horse_id'], inplace=True)
+            horse_pedigree_df.to_csv(HORSE_PEDIGREE_DF_PATH, index=False)
+
     def run(self):
         """メイン処理を実行"""
         try:
@@ -792,12 +980,22 @@ class NetKeibaScraper:
             logger.info(f"Found {len(past_ids)} past races and {len(future_ids)} future races")
             
             # 4. 過去レースデータ収集
-            logger.info("Scraping past race results...")
-            race_results_df = self.scrape_race_results(past_ids)
+            race_results_df = pd.DataFrame()
+            race_info_df = pd.DataFrame()
+            if past_ids:
+                logger.info("Scraping past race results...")
+                race_results_df, race_info_df = self.scrape_race_results(past_ids)
+            else:
+                logger.info("No new past races to scrape")
             
             # 5. 未来レース情報取得
-            logger.info("Scraping future race data...")
-            future_races_df = self.scrape_future_races(future_ids)
+            future_races_df = pd.DataFrame()
+            future_race_info_df = pd.DataFrame()
+            if future_ids:
+                logger.info("Scraping future race data...")
+                future_races_df, future_race_info_df = self.scrape_future_races(future_ids)
+            else:
+                logger.info("No future races to scrape")
             
             # 6. 馬ID抽出
             logger.info("Extracting horse IDs...")
@@ -805,13 +1003,19 @@ class NetKeibaScraper:
             logger.info(f"Found {len(horse_ids)} unique horses")
             
             # 7. 馬データ収集
-            logger.info("Scraping horse data...")
-            horse_past_df, horse_pedigree_df = self.scrape_horse_data(horse_ids)
+            horse_past_df = pd.DataFrame()
+            horse_pedigree_df = pd.DataFrame()
+            if horse_ids:
+                logger.info("Scraping horse data...")
+                horse_past_df, horse_pedigree_df = self.scrape_horse_data(horse_ids)
+            else:
+                logger.info("No horse data to scrape")
             
             # 8. データ保存
             logger.info("Saving data...")
-            self.save_data(race_results_df, future_races_df, 
-                          horse_past_df, horse_pedigree_df)
+            self.save_data(race_results_df, race_info_df, 
+                        future_races_df, future_race_info_df,
+                        horse_past_df, horse_pedigree_df)
             
             logger.info("Scraping completed successfully!")
             
