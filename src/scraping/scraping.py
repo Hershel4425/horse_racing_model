@@ -240,27 +240,28 @@ class NetKeibaScraper:
 
             if self._safe_request(url):
                 try:
-                    # タブが存在する場合の処理
-                    # 複数の日付がタブで表示される場合があるため、各タブをチェック
-                    tab_elements = self.driver.find_elements(
-                        By.CSS_SELECTOR, "#date_list_sub li"
-                    )
-                    tabs = tab_elements if tab_elements else [None]
+                    # # タブが存在する場合の処理
+                    # # 複数の日付がタブで表示される場合があるため、各タブをチェック
+                    # tab_elements = self.driver.find_elements(
+                    #     By.CSS_SELECTOR, "#date_list_sub li"
+                    # )
+                    # tabs = tab_elements if tab_elements else [None]
 
-                    for tab in tabs:
-                        # タブがある場合は各タブをクリックして取得
-                        if tab:
-                            self.driver.execute_script(
-                                "arguments[0].click();", tab.find_element(By.TAG_NAME, "a")
-                            )
-                            time.sleep(1) # タブ切り替えの待機
+                    # for tab in tabs:
+                    #     # タブがある場合は各タブをクリックして取得
+                    #     if tab:
+                    #         self.driver.execute_script(
+                    #             "arguments[0].click();", tab.find_element(By.TAG_NAME, "a")
+                    #         )
+                    #         time.sleep(1) # タブ切り替えの待機
 
-                            # レースIDを抽出
-                            ids = self._extract_race_ids_from_list_page()
+                    #         # レースIDを抽出
+                    #         ids = self._extract_race_ids_from_list_page()
 
-                        else:
-                            # タブがない場合は直接抽出
-                            ids = self._extract_race_ids_from_list_page()
+                    #     else:
+                    #         # タブがない場合は直接抽出
+                    #         ids = self._extract_race_ids_from_list_page()
+                    ids = self._extract_race_ids_from_list_page()
 
                     # ここで過去／未来に振り分け
                     target_set = (
