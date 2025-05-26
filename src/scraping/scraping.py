@@ -2,17 +2,14 @@ import pandas as pd
 import numpy as np
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+import chromedriver_binary  # driverのpath指定を省略するために必要  # noqa: F401
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from datetime import datetime, timedelta
 import time
 import re
 import os
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 import logging
-from io import StringIO
-import traceback
 import jpholiday # ← これを追加するのを忘れないでね！
 
 
@@ -615,7 +612,7 @@ class NetKeibaScraper:
             try:
                 race_name = race_name_box.find_element(By.CLASS_NAME, "RaceName")
                 race_info["レース名"] = race_name.text.strip()
-            except:
+            except Exception:
                 pass
             
             # グレード（重賞）
@@ -625,21 +622,21 @@ class NetKeibaScraper:
                     if grade:
                         race_info["重賞"] = f"G{i}"
                         break
-                except:
+                except Exception:
                     continue
             
             # ラウンド
             try:
                 round_elem = race_name_box.find_element(By.CLASS_NAME, "RaceNum")
                 race_info["ラウンド"] = round_elem.text.strip()
-            except:
+            except Exception:
                 pass
             
             # 日付
             try:
                 date_elem = self.driver.find_element(By.CSS_SELECTOR, "dd.Active a")
                 race_info["日付"] = date_elem.get_attribute("title")
-            except:
+            except Exception:
                 pass
             
             # RaceData01の情報
@@ -655,7 +652,7 @@ class NetKeibaScraper:
                 elif len(data_list) == 2:
                     race_info["発走時刻"] = data_list[0].strip()
                     race_info["距離条件"] = data_list[1].strip()
-            except:
+            except Exception:
                 pass
             
             # RaceData02の情報
@@ -673,7 +670,7 @@ class NetKeibaScraper:
                     race_info["特殊条件"] = spans[6].text.strip()
                     race_info["立て数"] = spans[7].text.strip()
                     race_info["賞金"] = spans[8].text.strip()
-            except:
+            except Exception:
                 pass
             
         except Exception as e:
@@ -696,7 +693,7 @@ class NetKeibaScraper:
         try:
             target = element.find_element(By.CSS_SELECTOR, selector)
             return target.text.strip()
-        except:
+        except Exception:
             return default
 
     def _safe_get_text_by_index(self, element, selector: str, index: int, default: str = "") -> str:
@@ -716,7 +713,7 @@ class NetKeibaScraper:
             if len(targets) > index:
                 return targets[index].text.strip()
             return default
-        except:
+        except Exception:
             return default
     
     
